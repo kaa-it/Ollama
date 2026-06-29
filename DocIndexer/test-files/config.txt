@@ -1,0 +1,15 @@
+Database=localhost
+Port=5432
+Username=admin
+
+CacheEnabled=true
+CacheTTL=3600
+
+LogLevel=Information
+LogFile=/var/log/app.log
+
+MaxConnections=100
+Timeout=30
+
+FeatureFlags.EnableSearch=true
+FeatureFlags.EnableExport=false
