@@ -1,5 +1,4 @@
-﻿using System.Collections.Concurrent;
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using OllamaSharp;
@@ -206,10 +205,15 @@ public class FixedSizeChunkingStrategy(int chunkSize = 512, int overlap = 50) : 
         var step = chunkSize - overlap;
         if (step <= 0) step = 1;
 
-        var totalChunks = (words.Length + step - 1) / step;
-        if (totalChunks <= 0) totalChunks = 1;
         var now = DateTime.UtcNow;
+        var title = Path.GetFileName(filePath);
         var index = 0;
+
+        int totalChunks;
+        if (words.Length <= chunkSize)
+            totalChunks = 1;
+        else
+            totalChunks = 1 + (words.Length - chunkSize + step - 1) / step;
 
         for (int offset = 0; offset < words.Length; offset += step, index++)
         {
@@ -221,7 +225,7 @@ public class FixedSizeChunkingStrategy(int chunkSize = 512, int overlap = 50) : 
             {
                 ChunkId = Guid.NewGuid().ToString(),
                 Source = filePath,
-                Title = Path.GetFileName(filePath),
+                Title = title,
                 Section = null,
                 Content = content_,
                 ChunkIndex = index,
@@ -262,12 +266,16 @@ public class StructuralChunkingStrategy(int maxChunkSize = 512, int overlap = 50
         foreach (var line in lines)
         {
             var trimmed = line.TrimStart();
-            if (trimmed.StartsWith('#') && trimmed.Length > 1 && trimmed[1] == ' ')
+            var headingLevel = 0;
+            while (headingLevel < trimmed.Length && headingLevel < 6 && trimmed[headingLevel] == '#')
+                headingLevel++;
+
+            if (headingLevel > 0 && headingLevel < trimmed.Length && trimmed[headingLevel] == ' ')
             {
                 if (currentLines.Count > 0)
                     sections.Add((currentSection, string.Join('\n', currentLines)));
 
-                currentSection = trimmed.TrimStart('#').Trim();
+                currentSection = trimmed[(headingLevel + 1)..].Trim();
                 currentLines = [line];
             }
             else
@@ -284,10 +292,11 @@ public class StructuralChunkingStrategy(int maxChunkSize = 512, int overlap = 50
 
     private IEnumerable<DocumentChunk> ChunkTxt(string filePath, string content, DateTime now)
     {
-        var blocks = content.Split(["\n\n\n", "\n\n\r\n\r\n"], StringSplitOptions.RemoveEmptyEntries);
-        // Also try double newlines
+        var normalized = content.Replace("\r\n", "\n");
+        var blocks = normalized.Split("\n\n", StringSplitOptions.RemoveEmptyEntries);
+
         if (blocks.Length <= 1)
-            blocks = content.Split(["\n\n", "\r\n\r\n"], StringSplitOptions.RemoveEmptyEntries);
+            blocks = normalized.Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
         var sections = new List<(string? section, string content)>();
         foreach (var block in blocks)
@@ -295,8 +304,13 @@ public class StructuralChunkingStrategy(int maxChunkSize = 512, int overlap = 50
             var trimmed = block.Trim();
             if (string.IsNullOrEmpty(trimmed)) continue;
 
-            var firstLine = trimmed.Split('\n')[0].Trim();
-            var section = firstLine.Length <= 100 ? firstLine : null;
+            var lines = trimmed.Split('\n');
+            var firstLine = lines[0].Trim();
+            var isHeading = firstLine.Length <= 100
+                && !firstLine.EndsWith('.')
+                && !firstLine.EndsWith(',')
+                && char.IsUpper(firstLine[0]);
+            var section = isHeading ? firstLine : null;
             sections.Add((section, trimmed));
         }
 
@@ -316,7 +330,11 @@ public class StructuralChunkingStrategy(int maxChunkSize = 512, int overlap = 50
             if (trimmed.StartsWith("#region "))
             {
                 if (currentLines.Count > 0)
-                    sections.Add((currentRegion, string.Join('\n', currentLines)));
+                {
+                    var unregioned = string.Join('\n', currentLines).Trim();
+                    if (!string.IsNullOrEmpty(unregioned))
+                        sections.Add((currentRegion ?? "Код вне региона", unregioned));
+                }
 
                 currentRegion = trimmed["#region ".Length..].Trim();
                 currentLines = [line];
@@ -324,8 +342,10 @@ public class StructuralChunkingStrategy(int maxChunkSize = 512, int overlap = 50
             else if (trimmed == "#endregion")
             {
                 currentLines.Add(line);
-                sections.Add((currentRegion, string.Join('\n', currentLines)));
-                currentRegion = null;
+                var regionContent = string.Join('\n', currentLines).Trim();
+                if (!string.IsNullOrEmpty(regionContent))
+                    sections.Add((currentRegion, regionContent));
+                currentRegion = "Код вне региона";
                 currentLines = [];
             }
             else
@@ -335,56 +355,88 @@ public class StructuralChunkingStrategy(int maxChunkSize = 512, int overlap = 50
         }
 
         if (currentLines.Count > 0)
-            sections.Add((currentRegion, string.Join('\n', currentLines)));
+        {
+            var remaining = string.Join('\n', currentLines).Trim();
+            if (!string.IsNullOrEmpty(remaining))
+                sections.Add((currentRegion ?? "Код вне региона", remaining));
+        }
 
         if (sections.Count <= 1)
         {
             sections = [];
-            currentRegion = null;
-            currentLines = [];
+            var blockLines = new List<string>();
             foreach (var line in lines)
             {
-                var t = line.Trim();
-                if (string.IsNullOrWhiteSpace(t))
+                if (string.IsNullOrWhiteSpace(line))
                 {
-                    if (currentLines.Count > 0)
+                    if (blockLines.Count > 0)
                     {
-                        var first = currentLines[0].Trim();
-                        var sec = first.Length <= 100 ? first : null;
-                        sections.Add((sec, string.Join('\n', currentLines)));
-                        currentLines = [];
+                        var block = string.Join('\n', blockLines).Trim();
+                        if (!string.IsNullOrEmpty(block))
+                        {
+                            var first = blockLines[0].Trim();
+                            var sec = IsCSharpSectionHeader(first) ? first : null;
+                            sections.Add((sec, block));
+                        }
+                        blockLines = [];
                     }
                 }
                 else
                 {
-                    currentLines.Add(line);
+                    blockLines.Add(line);
                 }
             }
-            if (currentLines.Count > 0)
+            if (blockLines.Count > 0)
             {
-                var first = currentLines[0].Trim();
-                var sec = first.Length <= 100 ? first : null;
-                sections.Add((sec, string.Join('\n', currentLines)));
+                var block = string.Join('\n', blockLines).Trim();
+                if (!string.IsNullOrEmpty(block))
+                {
+                    var first = blockLines[0].Trim();
+                    var sec = IsCSharpSectionHeader(first) ? first : null;
+                    sections.Add((sec, block));
+                }
             }
         }
 
         return ProcessSections(filePath, sections, now);
     }
 
+    private static bool IsCSharpSectionHeader(string line)
+    {
+        var trimmed = line.Trim();
+        return trimmed.Length <= 100 && (
+            trimmed.StartsWith("//") ||
+            trimmed.StartsWith("/*") ||
+            trimmed.StartsWith("public ") ||
+            trimmed.StartsWith("private ") ||
+            trimmed.StartsWith("internal ") ||
+            trimmed.StartsWith("protected ") ||
+            trimmed.StartsWith("class ") ||
+            trimmed.StartsWith("interface ") ||
+            trimmed.StartsWith("enum ") ||
+            trimmed.StartsWith("record ") ||
+            trimmed.StartsWith("struct ")
+        );
+    }
+
     private IEnumerable<DocumentChunk> ChunkSections(string filePath, string content, FixedSizeChunkingStrategy fallback, DateTime now)
     {
         var fallbackChunks = fallback.Chunk(filePath, content).ToList();
-        var index = 0;
-        foreach (var chunk in fallbackChunks)
+        var total = fallbackChunks.Count;
+        for (int i = 0; i < fallbackChunks.Count; i++)
         {
-            yield return chunk with { Strategy = ChunkingStrategy.Structural, ChunkIndex = index++ };
+            yield return fallbackChunks[i] with
+            {
+                Strategy = ChunkingStrategy.Structural,
+                ChunkIndex = i,
+                TotalChunks = total
+            };
         }
     }
 
     private IEnumerable<DocumentChunk> ProcessSections(string filePath, List<(string? section, string content)> sections, DateTime now)
     {
         var fallback = new FixedSizeChunkingStrategy(maxChunkSize, overlap);
-        var allChunks = new List<DocumentChunk>();
         var fileChunks = new List<DocumentChunk>();
 
         foreach (var (section, sectionContent) in sections)
@@ -452,14 +504,7 @@ public class OllamaEmbeddingService(string host = "http://localhost:11434", stri
 
     public async Task<IEnumerable<Model>> CheckAvailabilityAsync()
     {
-        try
-        {
-            return await _client.ListLocalModelsAsync();
-        }
-        catch (HttpRequestException)
-        {
-            throw;
-        }
+        return await _client.ListLocalModelsAsync();
     }
 
     public async Task<float[][]> GenerateEmbeddingsAsync(IEnumerable<string> texts, CancellationToken ct = default)
@@ -545,7 +590,7 @@ public class SqliteVectorStore(string dbPath = "index.db") : IVectorStore
 
     public async Task InitializeAsync()
     {
-        var conn = new SqliteConnection(ConnectionString);
+        using var conn = new SqliteConnection(ConnectionString);
         await conn.OpenAsync();
 
         var cmd = conn.CreateCommand();
@@ -566,12 +611,11 @@ public class SqliteVectorStore(string dbPath = "index.db") : IVectorStore
             CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);
         """;
         await cmd.ExecuteNonQueryAsync();
-        await conn.CloseAsync();
     }
 
     public async Task SaveChunksAsync(IEnumerable<IndexedChunk> chunks)
     {
-        var conn = new SqliteConnection(ConnectionString);
+        using var conn = new SqliteConnection(ConnectionString);
         await conn.OpenAsync();
 
         using var transaction = conn.BeginTransaction();
@@ -611,12 +655,11 @@ public class SqliteVectorStore(string dbPath = "index.db") : IVectorStore
         }
 
         transaction.Commit();
-        await conn.CloseAsync();
     }
 
     public async Task<IEnumerable<IndexedChunk>> SearchSimilarAsync(float[] queryEmbedding, int topK = 5, ChunkingStrategy? strategy = null)
     {
-        var conn = new SqliteConnection(ConnectionString);
+        using var conn = new SqliteConnection(ConnectionString);
         await conn.OpenAsync();
 
         var cmd = conn.CreateCommand();
@@ -655,13 +698,12 @@ public class SqliteVectorStore(string dbPath = "index.db") : IVectorStore
             chunks.Add((chunk, similarity));
         }
 
-        await conn.CloseAsync();
         return chunks.OrderByDescending(c => c.similarity).Take(topK).Select(c => c.chunk);
     }
 
     public async Task<long> GetChunkCountAsync(ChunkingStrategy? strategy = null)
     {
-        var conn = new SqliteConnection(ConnectionString);
+        using var conn = new SqliteConnection(ConnectionString);
         await conn.OpenAsync();
 
         var cmd = conn.CreateCommand();
@@ -675,14 +717,12 @@ public class SqliteVectorStore(string dbPath = "index.db") : IVectorStore
             cmd.CommandText = "SELECT COUNT(*) FROM chunks";
         }
 
-        var result = (long)(await cmd.ExecuteScalarAsync())!;
-        await conn.CloseAsync();
-        return result;
+        return (long)(await cmd.ExecuteScalarAsync())!;
     }
 
     public async Task ClearIndexAsync(ChunkingStrategy? strategy = null)
     {
-        var conn = new SqliteConnection(ConnectionString);
+        using var conn = new SqliteConnection(ConnectionString);
         await conn.OpenAsync();
 
         var cmd = conn.CreateCommand();
@@ -697,22 +737,16 @@ public class SqliteVectorStore(string dbPath = "index.db") : IVectorStore
         }
 
         await cmd.ExecuteNonQueryAsync();
-        await conn.CloseAsync();
     }
 
     public async Task<ChunkingStats> GetStatsAsync(ChunkingStrategy strategy)
     {
-        var conn = new SqliteConnection(ConnectionString);
+        using var conn = new SqliteConnection(ConnectionString);
         await conn.OpenAsync();
 
         var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT
-                COUNT(*) as ChunkCount,
-                AVG(LENGTH(content)) as AvgChars,
-                source,
-                COUNT(*) as FileChunks,
-                section
+            SELECT source, COUNT(*) as chunk_count, AVG(LENGTH(content)) as avg_chars
             FROM chunks
             WHERE strategy = $strategy
             GROUP BY source
@@ -722,43 +756,55 @@ public class SqliteVectorStore(string dbPath = "index.db") : IVectorStore
         var totalChunks = 0;
         var totalChars = 0.0;
         var filesWithMultiple = 0;
-        var sectionsSet = new HashSet<string>();
+        var allSections = new HashSet<string>();
 
-        using var reader = await cmd.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
+        using (var reader = await cmd.ExecuteReaderAsync())
         {
-            var count = reader.GetInt32(reader.GetOrdinal("ChunkCount"));
-            totalChunks += count;
-            totalChars += count * reader.GetDouble(reader.GetOrdinal("AvgChars"));
-            if (count > 1) filesWithMultiple++;
-
-            if (!reader.IsDBNull(reader.GetOrdinal("section")))
+            while (await reader.ReadAsync())
             {
-                var sec = reader.GetString(reader.GetOrdinal("section"));
-                if (!string.IsNullOrEmpty(sec))
-                    sectionsSet.Add(sec);
+                var count = reader.GetInt32(reader.GetOrdinal("chunk_count"));
+                totalChunks += count;
+                totalChars += count * reader.GetDouble(reader.GetOrdinal("avg_chars"));
+                if (count > 1) filesWithMultiple++;
             }
         }
 
-        await conn.CloseAsync();
-
-        // Get average word count separately
-        var conn2 = new SqliteConnection(ConnectionString);
-        await conn2.OpenAsync();
-        var cmd2 = conn2.CreateCommand();
-        cmd2.CommandText = "SELECT AVG(LENGTH(content) - LENGTH(REPLACE(content, ' ', '')) + 1) FROM chunks WHERE strategy = $strategy";
-        cmd2.Parameters.AddWithValue("$strategy", strategy.ToString());
-        var avgWords = (await cmd2.ExecuteScalarAsync()) is double dw ? dw : 0.0;
-        await conn2.CloseAsync();
+        if (strategy == ChunkingStrategy.Structural)
+        {
+            var cmd2 = conn.CreateCommand();
+            cmd2.CommandText = """
+                SELECT DISTINCT section FROM chunks
+                WHERE strategy = $strategy AND section IS NOT NULL AND section != ''
+            """;
+            cmd2.Parameters.AddWithValue("$strategy", strategy.ToString());
+            using var reader2 = await cmd2.ExecuteReaderAsync();
+            while (await reader2.ReadAsync())
+                allSections.Add(reader2.GetString(0));
+        }
 
         var avgChars = totalChunks > 0 ? totalChars / totalChunks : 0;
+
+        var cmd3 = conn.CreateCommand();
+        cmd3.CommandText = "SELECT content FROM chunks WHERE strategy = $strategy";
+        cmd3.Parameters.AddWithValue("$strategy", strategy.ToString());
+
+        double totalWords = 0;
+        using var reader3 = await cmd3.ExecuteReaderAsync();
+        while (await reader3.ReadAsync())
+        {
+            var content = reader3.GetString(0);
+            var wordCount = content.Split([' ', '\t', '\n'], StringSplitOptions.RemoveEmptyEntries).Length;
+            totalWords += wordCount;
+        }
+
+        var avgWords = totalChunks > 0 ? totalWords / totalChunks : 0;
 
         return new ChunkingStats(
             totalChunks,
             avgChars,
             avgWords,
             filesWithMultiple,
-            strategy == ChunkingStrategy.Structural ? sectionsSet.Count : null
+            strategy == ChunkingStrategy.Structural ? allSections.Count : null
         );
     }
 }
@@ -788,14 +834,14 @@ public class IndexingPipeline(
         Console.WriteLine($"  Найдено файлов: {files.Count}");
         Console.ResetColor();
 
-        var allChunks = new ConcurrentBag<DocumentChunk>();
-        var fileTasks = files.Select(async file =>
+        var allChunks = new List<DocumentChunk>();
+        foreach (var file in files)
         {
             try
             {
                 var content = await File.ReadAllTextAsync(file, ct);
-                foreach (var chunk in chunkingStrategy.Chunk(file, content))
-                    allChunks.Add(chunk);
+                var fileChunks = chunkingStrategy.Chunk(file, content).ToList();
+                allChunks.AddRange(fileChunks);
             }
             catch (Exception ex)
             {
@@ -803,46 +849,42 @@ public class IndexingPipeline(
                 Console.WriteLine($"\n  ⚠️  Пропущен {file}: {ex.Message}");
                 Console.ResetColor();
             }
-        });
+        }
 
-        await Task.WhenAll(fileTasks);
-
-        var chunks = allChunks.ToList();
-        var total = chunks.Count;
+        var total = allChunks.Count;
         if (total == 0)
             return new IndexingResult(files.Count, 0, sw.Elapsed);
 
-        var chunkTexts = chunks.Select(c => c.Content).ToList();
-        var index = 0;
         var batchSize = 10;
+        var processed = 0;
 
-        for (int i = 0; i < chunkTexts.Count; i += batchSize)
+        for (int i = 0; i < allChunks.Count; i += batchSize)
         {
-            var batch = chunkTexts.Skip(i).Take(batchSize).ToList();
-            var embeddings = await embeddingService.GenerateEmbeddingsAsync(batch, ct);
+            var batch = allChunks.Skip(i).Take(batchSize).ToList();
+            var texts = batch.Select(c => c.Content).ToList();
+            var embeddings = await embeddingService.GenerateEmbeddingsAsync(texts, ct);
 
             var indexedBatch = new List<IndexedChunk>();
-            foreach (var emb in embeddings)
+            for (int j = 0; j < batch.Count; j++)
             {
-                var chunk = chunks[index];
                 indexedBatch.Add(new IndexedChunk
                 {
-                    ChunkId = chunk.ChunkId,
-                    Source = chunk.Source,
-                    Title = chunk.Title,
-                    Section = chunk.Section,
-                    Content = chunk.Content,
-                    ChunkIndex = chunk.ChunkIndex,
-                    TotalChunks = chunk.TotalChunks,
-                    Strategy = chunk.Strategy,
-                    IndexedAt = chunk.IndexedAt,
-                    Embedding = emb
+                    ChunkId = batch[j].ChunkId,
+                    Source = batch[j].Source,
+                    Title = batch[j].Title,
+                    Section = batch[j].Section,
+                    Content = batch[j].Content,
+                    ChunkIndex = batch[j].ChunkIndex,
+                    TotalChunks = batch[j].TotalChunks,
+                    Strategy = batch[j].Strategy,
+                    IndexedAt = batch[j].IndexedAt,
+                    Embedding = embeddings[j]
                 });
-                index++;
             }
 
             await vectorStore.SaveChunksAsync(indexedBatch);
-            progress?.Report((double)index / total);
+            processed += batch.Count;
+            progress?.Report((double)processed / total);
         }
 
         sw.Stop();
