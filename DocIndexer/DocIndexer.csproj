@@ -12,4 +12,8 @@
     <PackageReference Include="OllamaSharp" Version="5.4.25" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="patterns\" />
+  </ItemGroup>
+
 </Project>

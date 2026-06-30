@@ -6,7 +6,7 @@ using OllamaSharp.Models;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-var rootDir = args.Length > 0 ? args[0] : "./test-files";
+var rootDir = args.Length > 0 ? args[0] : "../../../patterns";
 var extensions = new[] { ".txt", ".md", ".cs", ".json", ".xml", ".yaml", ".yml", ".html", ".js", ".py" };
 var ollamaHost = Environment.GetEnvironmentVariable("OLLAMA_HOST") ?? "http://localhost:11434";
 var embeddingModel = Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "nomic-embed-text";
