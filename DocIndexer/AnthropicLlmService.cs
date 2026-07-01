@@ -11,7 +11,6 @@ public class AnthropicLlmService : ILlmService, IDisposable
     private readonly AnthropicClient _client;
     private readonly string _model;
     private readonly int _maxTokens;
-    private readonly decimal _temperature;
 
     public AnthropicLlmService()
     {
@@ -20,9 +19,8 @@ public class AnthropicLlmService : ILlmService, IDisposable
             throw new InvalidOperationException("ANTHROPIC_API_KEY environment variable is not set");
 
         _client = new AnthropicClient(apiKey);
-        _model = Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "claude-3-5-sonnet-20240620";
+        _model = Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "claude-opus-4-5-20251101";
         _maxTokens = 1024;
-        _temperature = 0.1m;
     }
 
     public async Task<string> AskAsync(string prompt, string? systemPrompt = null, CancellationToken ct = default)
@@ -36,9 +34,8 @@ public class AnthropicLlmService : ILlmService, IDisposable
         {
             Messages = messages,
             MaxTokens = _maxTokens,
-            Model = Anthropic.SDK.Constants.AnthropicModels.Claude45Opus,
+            Model = _model,
             Stream = false,
-            Temperature = _temperature
         };
 
         if (!string.IsNullOrEmpty(systemPrompt))

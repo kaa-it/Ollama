@@ -8,7 +8,7 @@ public class RagPipeline(
 
     public async Task<(string context, string[] sources)> BuildContextAsync(string question, CancellationToken ct = default)
     {
-        var queryEmbedding = (await embeddingService.GenerateEmbeddingsAsync([$"search_query: {question}"], ct))[0];
+        var queryEmbedding = await embeddingService.GenerateQueryEmbeddingAsync(question, ct);
 
         var chunks = await vectorStore.SearchSimilarAsync(queryEmbedding, _topK, ChunkingStrategy.Structural);
         var chunksList = chunks.ToList();
@@ -17,8 +17,9 @@ public class RagPipeline(
             .Select(c => c.Source)
             .Select(p =>
             {
-                var idx = p.IndexOf("patterns/", StringComparison.OrdinalIgnoreCase);
-                return idx >= 0 ? p[idx..] : Path.GetFileName(p);
+                var normalized = p.Replace('\\', '/');
+                var idx = normalized.IndexOf("patterns/", StringComparison.OrdinalIgnoreCase);
+                return idx >= 0 ? normalized[idx..] : Path.GetFileName(p);
             })
             .Distinct()
             .ToArray();

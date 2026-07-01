@@ -1,9 +1,17 @@
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
-public class EvaluationEngine(string dbPath = "document_index.db")
+public class EvaluationEngine
 {
-    private string ConnectionString => $"Data Source={dbPath}";
+    private readonly string _dbPath;
+    private readonly OllamaEmbeddingService _embeddingService;
+    private string ConnectionString => $"Data Source={_dbPath}";
+
+    public EvaluationEngine(string dbPath, OllamaEmbeddingService embeddingService)
+    {
+        _dbPath = dbPath;
+        _embeddingService = embeddingService;
+    }
 
     public async Task RunAsync(List<TestQuestion> questions, CancellationToken ct = default)
     {
@@ -20,9 +28,9 @@ public class EvaluationEngine(string dbPath = "document_index.db")
         await InitializeEvaluationTableAsync();
 
         using var llmService = new AnthropicLlmService();
-        var vectorStore = new SqliteVectorStore(dbPath);
+        var vectorStore = new SqliteVectorStore(_dbPath);
         var ragPipeline = new RagPipeline(
-            new OllamaEmbeddingService(),
+            _embeddingService,
             vectorStore);
         var agent = new ComparisonAgent(llmService, ragPipeline);
 
@@ -50,6 +58,7 @@ public class EvaluationEngine(string dbPath = "document_index.db")
                 await SaveEvaluationAsync(q, "with_rag", result.AnswerWithRag, result.SourcesUsed, result.TimeWithRagMs);
 
                 PrintComparison(result);
+                PrintKeyConceptsScore(result);
             }
             catch (Exception ex)
             {
@@ -59,7 +68,7 @@ public class EvaluationEngine(string dbPath = "document_index.db")
             }
         }
 
-        PrintSummary(questions);
+        await PrintSummaryAsync(questions);
     }
 
     private async Task InitializeEvaluationTableAsync()
@@ -136,14 +145,14 @@ public class EvaluationEngine(string dbPath = "document_index.db")
         Console.ResetColor();
     }
 
-    private void PrintSummary(List<TestQuestion> questions)
+    private async Task PrintSummaryAsync(List<TestQuestion> questions)
     {
         using var conn = new SqliteConnection(ConnectionString);
-        conn.Open();
+        await conn.OpenAsync();
 
         var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT mode, AVG(response_time_ms), AVG(LENGTH(answer)) FROM evaluations GROUP BY mode";
-        using var reader = cmd.ExecuteReader();
+        using var reader = await cmd.ExecuteReaderAsync();
 
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("\n╔══════════════════════════════════════════════════════════════════════════════╗");
@@ -153,7 +162,7 @@ public class EvaluationEngine(string dbPath = "document_index.db")
         Console.WriteLine("╠═══════════════╬════════════════╬══════════════════╬══════════════════════════╣");
 
         var stats = new List<(string mode, double avgTime, double avgLen)>();
-        while (reader.Read())
+        while (await reader.ReadAsync())
         {
             stats.Add((
                 reader.GetString(0),
@@ -170,6 +179,28 @@ public class EvaluationEngine(string dbPath = "document_index.db")
 
         Console.WriteLine("╚═══════════════╩════════════════╩══════════════════╩══════════════════════════╝");
         Console.ResetColor();
+    }
+
+    private void PrintKeyConceptsScore(ComparisonResult result)
+    {
+        var keyConcepts = result.Question.KeyConcepts;
+        if (keyConcepts == null || keyConcepts.Length == 0) return;
+
+        var scoreWithoutRag = ScoreAnswer(result.AnswerWithoutRag, keyConcepts);
+        var scoreWithRag = ScoreAnswer(result.AnswerWithRag, keyConcepts);
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine($"  Key concepts matched without RAG: {scoreWithoutRag.Item1}/{keyConcepts.Length} ({scoreWithoutRag.Item2:F2})");
+        Console.WriteLine($"  Key concepts matched with RAG:    {scoreWithRag.Item1}/{keyConcepts.Length} ({scoreWithRag.Item2:F2})");
+        Console.ResetColor();
+    }
+
+    private static (int matched, double score) ScoreAnswer(string answer, string[] keyConcepts)
+    {
+        if (keyConcepts.Length == 0) return (0, 0);
+        var lower = answer.ToLowerInvariant();
+        var matched = keyConcepts.Count(kc => lower.Contains(kc.ToLowerInvariant()));
+        return (matched, (double)matched / keyConcepts.Length);
     }
 
     private static string Truncate(string text, int maxLen)

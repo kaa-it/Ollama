@@ -6,7 +6,7 @@ using OllamaSharp.Models;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-var mode = (args.Length > 0 ? args[0] : "compare").ToLowerInvariant();
+var mode = (args.Length > 0 ? args[0] : "help").ToLowerInvariant();
 var rootDir = args.Length > 1 ? args[1] : "../../../patterns";
 var extensions = new[] { ".txt", ".md", ".cs", ".json", ".xml", ".yaml", ".yml", ".html", ".js", ".py" };
 var ollamaHost = Environment.GetEnvironmentVariable("OLLAMA_HOST") ?? "http://localhost:11434";
@@ -57,7 +57,19 @@ switch (mode)
         await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
         var comparator = new StrategyComparator(store);
         await comparator.CompareAndReportAsync();
-        await RunCompareAsync(store, dbPath);
+        await RunCompareAsync(store, ollama, dbPath);
+        break;
+    case "help" or "--help" or "-h":
+        Console.WriteLine("Usage: dotnet run -- [mode] [rootDir]");
+        Console.WriteLine("Modes:");
+        Console.WriteLine("  index   - Index documents using FixedSize + Structural strategies");
+        Console.WriteLine("  demo    - Interactive semantic search demo");
+        Console.WriteLine("  compare - Run RAG vs No-RAG comparison (requires ANTHROPIC_API_KEY)");
+        Console.WriteLine("\nEnvironment variables:");
+        Console.WriteLine("  ANTHROPIC_API_KEY    - Required for compare mode");
+        Console.WriteLine("  ANTHROPIC_MODEL      - Default: claude-3-5-sonnet-20240620");
+        Console.WriteLine("  OLLAMA_HOST          - Default: http://localhost:11434");
+        Console.WriteLine("  EMBEDDING_MODEL      - Default: nomic-embed-text");
         break;
     default:
         Console.ForegroundColor = ConsoleColor.Yellow;
@@ -140,13 +152,22 @@ static async Task RunDemoAsync(SqliteVectorStore store, OllamaEmbeddingService o
     }
 }
 
-static async Task RunCompareAsync(SqliteVectorStore store, string dbPath)
+static async Task RunCompareAsync(SqliteVectorStore store, OllamaEmbeddingService ollama, string dbPath)
 {
-    var questionsJson = await File.ReadAllTextAsync("test-questions.json");
+    var questionsPath = "test-questions.json";
+    if (!File.Exists(questionsPath))
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"❌ Файл {questionsPath} не найден. Убедитесь что он находится в рабочей директории.");
+        Console.ResetColor();
+        return;
+    }
+
+    var questionsJson = await File.ReadAllTextAsync(questionsPath);
     var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
     var questions = JsonSerializer.Deserialize<List<TestQuestion>>(questionsJson, options) ?? [];
 
-    var engine = new EvaluationEngine(dbPath);
+    var engine = new EvaluationEngine(dbPath, ollama);
     await engine.RunAsync(questions);
 }
 
@@ -540,6 +561,27 @@ public class OllamaEmbeddingService(string host = "http://localhost:11434", stri
     public async Task<IEnumerable<Model>> CheckAvailabilityAsync()
     {
         return await _client.ListLocalModelsAsync();
+    }
+
+    public async Task<float[]> GenerateQueryEmbeddingAsync(string query, CancellationToken ct = default)
+    {
+        var textList = new List<string> { query };
+        var batches = new List<List<string>> { textList };
+        var results = new float[1][];
+        var index = 0;
+
+        foreach (var b in batches)
+        {
+            var prefixedTexts = b.Select(t => $"search_query: {t}").ToList();
+            var embeddings = await EmbedWithRetryAsync(prefixedTexts, ct);
+            foreach (var emb in embeddings)
+            {
+                if (emb.Length != 768)
+                    throw new InvalidOperationException($"Expected 768-dimensional embedding, got {emb.Length}");
+                results[index++] = emb;
+            }
+        }
+        return results[0];
     }
 
     public async Task<float[][]> GenerateEmbeddingsAsync(IEnumerable<string> texts, CancellationToken ct = default)
