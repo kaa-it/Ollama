@@ -1,0 +1,72 @@
+[
+  {
+    "id": 1,
+    "question": "What is the RAII guard pattern in Rust and how does it differ from traditional RAII?",
+    "expected_answer": "RAII guards extend traditional RAII by using the type system to ensure access to a resource is always mediated by a guard object. The guard contains a reference to the underlying resource, and the borrow checker ensures the guard cannot outlive the resource. Classic example: MutexGuard from std library. The guard implements Deref to be used like a pointer.",
+    "expected_sources": ["patterns/behavioural/RAII.md"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 2,
+    "question": "How does the Builder pattern help when a struct has many optional fields in Rust?",
+    "expected_answer": "Builder pattern separates construction from representation. In Rust it's especially useful because Rust lacks function overloading and default parameters. The builder allows step-by-step construction, keeps client code backwards compatible when adding fields, and can be used as a template for constructing multiple objects.",
+    "expected_sources": ["patterns/creational/builder.md"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 3,
+    "question": "What is the 'Clone to satisfy the borrow checker' anti-pattern and why is it problematic?",
+    "expected_answer": "This anti-pattern occurs when developers use .clone() to resolve borrow checker errors without understanding ownership. It creates unsynchronized copies of data. While sometimes acceptable (prototypes, non-performance-critical code), it indicates a lack of understanding of Rust's ownership model. Rc and Arc are exceptions as they handle clones intelligently via reference counting.",
+    "expected_sources": ["anti_patterns/borrow_clone.md"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 4,
+    "question": "Explain the mem::take and mem::replace idiom for changing enum variants without cloning.",
+    "expected_answer": "When you have &mut MyEnum and want to change variant while keeping owned values (like String), mem::take swaps the value with its Default (empty String for String, which doesn't allocate), returning the previous owned value. mem::replace allows specifying the replacement value. This avoids the 'clone to satisfy borrow checker' anti-pattern. For Option, Option::take() is preferred.",
+    "expected_sources": ["idioms/mem-replace.md", "anti_patterns/borrow_clone.md"],
+    "difficulty": "hard"
+  },
+  {
+    "id": 5,
+    "question": "What is the Newtype pattern and what are its primary use cases in Rust?",
+    "expected_answer": "Newtype is a tuple struct with a single field creating an opaque wrapper. Use cases: type safety (distinguishing units like Miles vs Kilometers), encapsulation (hiding implementation details), restricting functionality, making Copy types have move semantics, overriding trait implementations (e.g., custom Display for passwords). It's a zero-cost abstraction.",
+    "expected_sources": ["patterns/behavioural/newtype.md"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 6,
+    "question": "How can you use destructors for finalization instead of finally blocks in Rust?",
+    "expected_answer": "Since Rust lacks finally blocks, you can create a struct implementing Drop and instantiate it at the start of a function. The destructor runs on all exit paths: normal return, early return, ? operator, and panics. Important caveats: destructors aren't guaranteed in infinite loops or double-panics. Variable must start with _ (but not just _) to avoid unused warnings. Must not be moved or returned.",
+    "expected_sources": ["idioms/dtor-finally.md", "patterns/behavioural/RAII.md"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 7,
+    "question": "Why should function arguments prefer borrowed types like &str over &String?",
+    "expected_answer": "Using borrowed types (&str, &[T], &T) over borrowing owned types (&String, &Vec<T>, &Box<T>) increases flexibility through deref coercion. &String has two layers of indirection while &str has one. Functions taking &str accept &String, string literals, and slices. This follows the principle: prefer the borrowed type over borrowing the owned type.",
+    "expected_sources": ["idioms/coercion-arguments.md"],
+    "difficulty": "easy"
+  },
+  {
+    "id": 8,
+    "question": "What is the Strategy pattern and how can it be implemented without traits in Rust?",
+    "expected_answer": "Strategy pattern separates algorithm skeleton from specific implementations, enabling dependency inversion. In Rust it can be implemented with traits (Formatter trait with Text/Json implementations) or with closures/closures as strategies. Rust's Option::map is an example of strategy pattern with closures. Serde is a real-world example allowing format swapping (serde_json vs serde_cbor).",
+    "expected_sources": ["patterns/behavioural/strategy.md"],
+    "difficulty": "medium"
+  },
+  {
+    "id": 9,
+    "question": "Explain struct decomposition for independent borrowing and when it is useful.",
+    "expected_answer": "When a large struct causes borrow checker issues (whole struct used at once preventing independent field borrowing), decompose it into smaller structs and compose them back. Each smaller struct can be borrowed independently. This often reveals better design with smaller units of functionality. Caveat: can lead to verbose code and worse abstractions if overused.",
+    "expected_sources": ["patterns/structural/compose-structs.md"],
+    "difficulty": "hard"
+  },
+  {
+    "id": 10,
+    "question": "Why is #[deny(warnings)] considered an anti-pattern in Rust?",
+    "expected_answer": "It breaks Rust's stability guarantees. New compiler versions may introduce new warnings (e.g., for deprecated APIs or upcoming breaking changes), causing builds to fail. It also prevents using tools like clippy that add new lints. Alternatives: use RUSTFLAGS='-D warnings' in CI, or explicitly list safe lints to deny (bad_style, dead_code, etc.) without denying all warnings.",
+    "expected_sources": ["anti_patterns/deny-warnings.md"],
+    "difficulty": "easy"
+  }
+]

@@ -6,7 +6,8 @@ using OllamaSharp.Models;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-var rootDir = args.Length > 0 ? args[0] : "../../../patterns";
+var mode = (args.Length > 0 ? args[0] : "compare").ToLowerInvariant();
+var rootDir = args.Length > 1 ? args[1] : "../../../patterns";
 var extensions = new[] { ".txt", ".md", ".cs", ".json", ".xml", ".yaml", ".yml", ".html", ".js", ".py" };
 var ollamaHost = Environment.GetEnvironmentVariable("OLLAMA_HOST") ?? "http://localhost:11434";
 var embeddingModel = Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "nomic-embed-text";
@@ -44,75 +45,109 @@ Console.ForegroundColor = ConsoleColor.Green;
 Console.WriteLine("\n✅ Ollama доступен");
 Console.ResetColor();
 
-Console.ForegroundColor = ConsoleColor.Blue;
-Console.WriteLine("\n📦 Индексация: Fixed Size Strategy (chunk=512, overlap=50)");
-Console.ResetColor();
-
-var progress1 = new Progress<double>(p =>
+switch (mode)
 {
-    Console.ForegroundColor = ConsoleColor.Cyan;
-    Console.Write($"\r  Прогресс: {p:P0}");
-    Console.ResetColor();
-});
-var pipeline1 = new IndexingPipeline(new FixedSizeChunkingStrategy(chunkSize, overlap), ollama, store);
-var result1 = await pipeline1.RunAsync(rootDir, extensions, progress1);
-Console.ForegroundColor = ConsoleColor.Green;
-Console.WriteLine($"\n✅ Готово: {result1.ChunksCreated} чанков из {result1.FilesProcessed} файлов за {result1.Duration.TotalSeconds:F1}с");
-Console.ResetColor();
-
-Console.ForegroundColor = ConsoleColor.Blue;
-Console.WriteLine("\n📐 Индексация: Structural Strategy");
-Console.ResetColor();
-
-var progress2 = new Progress<double>(p =>
-{
-    Console.ForegroundColor = ConsoleColor.Cyan;
-    Console.Write($"\r  Прогресс: {p:P0}");
-    Console.ResetColor();
-});
-var pipeline2 = new IndexingPipeline(new StructuralChunkingStrategy(chunkSize, overlap), ollama, store);
-var result2 = await pipeline2.RunAsync(rootDir, extensions, progress2);
-Console.ForegroundColor = ConsoleColor.Green;
-Console.WriteLine($"\n✅ Готово: {result2.ChunksCreated} чанков из {result2.FilesProcessed} файлов за {result2.Duration.TotalSeconds:F1}с");
-Console.ResetColor();
-
-var comparator = new StrategyComparator(store);
-await comparator.CompareAndReportAsync();
-
-Console.ForegroundColor = ConsoleColor.Blue;
-Console.WriteLine("\n🔍 ДЕМО СЕМАНТИЧЕСКОГО ПОИСКА");
-Console.ResetColor();
-
-while (true)
-{
-    Console.Write("\nВведите запрос (или 'exit'): ");
-    var query = Console.ReadLine();
-    if (string.IsNullOrWhiteSpace(query) || query == "exit") break;
-
-    try
-    {
-        var queryEmbedding = (await ollama.GenerateEmbeddingsAsync([$"search_query: {query}"]))[0];
-
+    case "index":
+        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+        break;
+    case "demo":
+        await RunDemoAsync(store, ollama);
+        break;
+    case "compare":
+        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+        var comparator = new StrategyComparator(store);
+        await comparator.CompareAndReportAsync();
+        await RunCompareAsync(store, dbPath);
+        break;
+    default:
         Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("\n--- Fixed Size результаты ---");
+        Console.WriteLine("Неизвестный режим. Используйте: index, demo, или compare");
         Console.ResetColor();
-        var fixedResults = await store.SearchSimilarAsync(queryEmbedding, 3, ChunkingStrategy.FixedSize);
-        foreach (var r in fixedResults)
-            PrintResult(r);
+        break;
+}
 
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("\n--- Structural результаты ---");
-        Console.ResetColor();
-        var structResults = await store.SearchSimilarAsync(queryEmbedding, 3, ChunkingStrategy.Structural);
-        foreach (var r in structResults)
-            PrintResult(r);
-    }
-    catch (Exception ex)
+static async Task RunIndexingAsync(SqliteVectorStore store, OllamaEmbeddingService ollama, string rootDir, string[] extensions, int chunkSize, int overlap)
+{
+    Console.ForegroundColor = ConsoleColor.Blue;
+    Console.WriteLine("\n📦 Индексация: Fixed Size Strategy (chunk=512, overlap=50)");
+    Console.ResetColor();
+
+    var progress1 = new Progress<double>(p =>
     {
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"❌ Ошибка поиска: {ex.Message}");
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.Write($"\r  Прогресс: {p:P0}");
         Console.ResetColor();
+    });
+    var pipeline1 = new IndexingPipeline(new FixedSizeChunkingStrategy(chunkSize, overlap), ollama, store);
+    var result1 = await pipeline1.RunAsync(rootDir, extensions, progress1);
+    Console.ForegroundColor = ConsoleColor.Green;
+    Console.WriteLine($"\n✅ Готово: {result1.ChunksCreated} чанков из {result1.FilesProcessed} файлов за {result1.Duration.TotalSeconds:F1}с");
+    Console.ResetColor();
+
+    Console.ForegroundColor = ConsoleColor.Blue;
+    Console.WriteLine("\n📐 Индексация: Structural Strategy");
+    Console.ResetColor();
+
+    var progress2 = new Progress<double>(p =>
+    {
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.Write($"\r  Прогресс: {p:P0}");
+        Console.ResetColor();
+    });
+    var pipeline2 = new IndexingPipeline(new StructuralChunkingStrategy(chunkSize, overlap), ollama, store);
+    var result2 = await pipeline2.RunAsync(rootDir, extensions, progress2);
+    Console.ForegroundColor = ConsoleColor.Green;
+    Console.WriteLine($"\n✅ Готово: {result2.ChunksCreated} чанков из {result2.FilesProcessed} файлов за {result2.Duration.TotalSeconds:F1}с");
+    Console.ResetColor();
+}
+
+static async Task RunDemoAsync(SqliteVectorStore store, OllamaEmbeddingService ollama)
+{
+    Console.ForegroundColor = ConsoleColor.Blue;
+    Console.WriteLine("\n🔍 ДЕМО СЕМАНТИЧЕСКОГО ПОИСКА");
+    Console.ResetColor();
+
+    while (true)
+    {
+        Console.Write("\nВведите запрос (или 'exit'): ");
+        var query = Console.ReadLine();
+        if (string.IsNullOrWhiteSpace(query) || query == "exit") break;
+
+        try
+        {
+            var queryEmbedding = (await ollama.GenerateEmbeddingsAsync([$"search_query: {query}"]))[0];
+
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("\n--- Fixed Size результаты ---");
+            Console.ResetColor();
+            var fixedResults = await store.SearchSimilarAsync(queryEmbedding, 3, ChunkingStrategy.FixedSize);
+            foreach (var r in fixedResults)
+                PrintResult(r);
+
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("\n--- Structural результаты ---");
+            Console.ResetColor();
+            var structResults = await store.SearchSimilarAsync(queryEmbedding, 3, ChunkingStrategy.Structural);
+            foreach (var r in structResults)
+                PrintResult(r);
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"❌ Ошибка поиска: {ex.Message}");
+            Console.ResetColor();
+        }
     }
+}
+
+static async Task RunCompareAsync(SqliteVectorStore store, string dbPath)
+{
+    var questionsJson = await File.ReadAllTextAsync("test-questions.json");
+    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+    var questions = JsonSerializer.Deserialize<List<TestQuestion>>(questionsJson, options) ?? [];
+
+    var engine = new EvaluationEngine(dbPath);
+    await engine.RunAsync(questions);
 }
 
 static void PrintResult(IndexedChunk r)
@@ -905,16 +940,16 @@ public class StrategyComparator(IVectorStore vectorStore)
 
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("\n╔══════════════════════════════════════════════════════════════╗");
-        Console.WriteLine("║           СРАВНЕНИЕ СТРАТЕГИЙ CHUNKING'А                   ║");
-        Console.WriteLine("╠════════════════════╦══════════════════╦════════════════════╣");
-        Console.WriteLine("║ Метрика            ║ FixedSize        ║ Structural         ║");
-        Console.WriteLine("╠════════════════════╬══════════════════╬════════════════════╣");
-        Console.WriteLine($"║ Чанков             ║ {fixedStats.ChunkCount,16} ║ {structStats.ChunkCount,17} ║");
-        Console.WriteLine($"║ Средний размер     ║ {fixedStats.AvgChunkLengthChars,8:F0} симв     ║ {structStats.AvgChunkLengthChars,9:F0} симв     ║");
-        Console.WriteLine($"║ Средний размер     ║ {fixedStats.AvgChunkLengthWords,8:F0} слова     ║ {structStats.AvgChunkLengthWords,9:F0} слова     ║");
-        Console.WriteLine($"║ Файлов >1 чанка    ║ {fixedStats.FilesWithMultipleChunks,16} ║ {structStats.FilesWithMultipleChunks,17} ║");
-        Console.WriteLine($"║ Секций распознано  ║ {"N/A",16} ║ {structStats.SectionsDetected?.ToString() ?? "N/A",17} ║");
-        Console.WriteLine("╚════════════════════╩══════════════════╩════════════════════╝");
+        Console.WriteLine("║           СРАВНЕНИЕ СТРАТЕГИЙ CHUNKING'А                     ║");
+        Console.WriteLine("╠════════════════════╦══════════════════╦══════════════════════╣");
+        Console.WriteLine("║ Метрика            ║ FixedSize        ║ Structural           ║");
+        Console.WriteLine("╠════════════════════╬══════════════════╬══════════════════════╣");
+        Console.WriteLine($"║ Чанков             ║ {fixedStats.ChunkCount,16} ║ {structStats.ChunkCount,17}    ║");
+        Console.WriteLine($"║ Средний размер     ║ {fixedStats.AvgChunkLengthChars,8:F0} симв    ║ {structStats.AvgChunkLengthChars,9:F0} симв       ║");
+        Console.WriteLine($"║ Средний размер     ║ {fixedStats.AvgChunkLengthWords,8:F0} слова   ║ {structStats.AvgChunkLengthWords,9:F0} слова      ║");
+        Console.WriteLine($"║ Файлов >1 чанка    ║ {fixedStats.FilesWithMultipleChunks,16} ║ {structStats.FilesWithMultipleChunks,17}    ║");
+        Console.WriteLine($"║ Секций распознано  ║ {"N/A",16} ║ {structStats.SectionsDetected?.ToString() ?? "N/A",17}    ║");
+        Console.WriteLine("╚════════════════════╩══════════════════╩══════════════════════╝");
         Console.ResetColor();
 
         Console.ForegroundColor = ConsoleColor.Cyan;
