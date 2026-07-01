@@ -57,7 +57,7 @@ switch (mode)
         await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
         var comparator = new StrategyComparator(store);
         await comparator.CompareAndReportAsync();
-        await RunCompareAsync(store, ollama, dbPath);
+        await RunCompareAsync(ollama, dbPath);
         break;
     case "help" or "--help" or "-h":
         Console.WriteLine("Usage: dotnet run -- [mode] [rootDir]");
@@ -66,10 +66,16 @@ switch (mode)
         Console.WriteLine("  demo    - Interactive semantic search demo");
         Console.WriteLine("  compare - Run RAG vs No-RAG comparison (requires ANTHROPIC_API_KEY)");
         Console.WriteLine("\nEnvironment variables:");
-        Console.WriteLine("  ANTHROPIC_API_KEY    - Required for compare mode");
-        Console.WriteLine("  ANTHROPIC_MODEL      - Default: claude-3-5-sonnet-20240620");
-        Console.WriteLine("  OLLAMA_HOST          - Default: http://localhost:11434");
-        Console.WriteLine("  EMBEDDING_MODEL      - Default: nomic-embed-text");
+        Console.WriteLine("  ANTHROPIC_API_KEY       - Required for compare mode");
+        Console.WriteLine("  ANTHROPIC_MODEL         - Default: claude-3-5-sonnet-20240620");
+        Console.WriteLine("  OLLAMA_HOST             - Default: http://localhost:11434");
+        Console.WriteLine("  EMBEDDING_MODEL         - Default: nomic-embed-text");
+        Console.WriteLine("  RAG_TOP_K_PRE=10        - Pre-filter K (vector search)");
+        Console.WriteLine("  RAG_TOP_K_POST=3        - Post-filter K (sent to LLM)");
+        Console.WriteLine("  RAG_SIMILARITY_THRESHOLD=0.5 - Min similarity for filter");
+        Console.WriteLine("  RAG_ENABLE_REWRITE=true - Enable query rewrite");
+        Console.WriteLine("  RAG_ENABLE_RERANK=true  - Enable heuristic reranker");
+        Console.WriteLine("  RAG_USE_LLM_REWRITE=false - Use LLM for rewrite (vs heuristic)");
         break;
     default:
         Console.ForegroundColor = ConsoleColor.Yellow;
@@ -127,7 +133,7 @@ static async Task RunDemoAsync(SqliteVectorStore store, OllamaEmbeddingService o
 
         try
         {
-            var queryEmbedding = (await ollama.GenerateEmbeddingsAsync([$"search_query: {query}"]))[0];
+            var queryEmbedding = await ollama.GenerateQueryEmbeddingAsync(query);
 
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine("\n--- Fixed Size результаты ---");
@@ -152,7 +158,7 @@ static async Task RunDemoAsync(SqliteVectorStore store, OllamaEmbeddingService o
     }
 }
 
-static async Task RunCompareAsync(SqliteVectorStore store, OllamaEmbeddingService ollama, string dbPath)
+static async Task RunCompareAsync(OllamaEmbeddingService ollama, string dbPath)
 {
     var questionsPath = "test-questions.json";
     if (!File.Exists(questionsPath))
@@ -656,6 +662,7 @@ public interface IVectorStore
     Task InitializeAsync();
     Task SaveChunksAsync(IEnumerable<IndexedChunk> chunks);
     Task<IEnumerable<IndexedChunk>> SearchSimilarAsync(float[] queryEmbedding, int topK = 5, ChunkingStrategy? strategy = null);
+    Task<IEnumerable<(IndexedChunk chunk, float similarity)>> SearchSimilarWithScoresAsync(float[] queryEmbedding, int topK = 5, ChunkingStrategy? strategy = null);
     Task<long> GetChunkCountAsync(ChunkingStrategy? strategy = null);
     Task ClearIndexAsync(ChunkingStrategy? strategy = null);
     Task<ChunkingStats> GetStatsAsync(ChunkingStrategy strategy);
@@ -776,6 +783,50 @@ public class SqliteVectorStore(string dbPath = "index.db") : IVectorStore
         }
 
         return chunks.OrderByDescending(c => c.similarity).Take(topK).Select(c => c.chunk);
+    }
+
+    public async Task<IEnumerable<(IndexedChunk chunk, float similarity)>> SearchSimilarWithScoresAsync(float[] queryEmbedding, int topK = 5, ChunkingStrategy? strategy = null)
+    {
+        using var conn = new SqliteConnection(ConnectionString);
+        await conn.OpenAsync();
+
+        var cmd = conn.CreateCommand();
+        if (strategy.HasValue)
+        {
+            cmd.CommandText = "SELECT * FROM chunks WHERE strategy = $strategy";
+            cmd.Parameters.AddWithValue("$strategy", strategy.Value.ToString());
+        }
+        else
+        {
+            cmd.CommandText = "SELECT * FROM chunks";
+        }
+
+        var chunks = new List<(IndexedChunk chunk, float similarity)>();
+        using var reader = await cmd.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+            var embeddingJson = reader.GetString(reader.GetOrdinal("embedding"));
+            var embedding = JsonSerializer.Deserialize<float[]>(embeddingJson) ?? [];
+            var similarity = VectorMath.CosineSimilarity(queryEmbedding, embedding);
+
+            var chunk = new IndexedChunk
+            {
+                ChunkId = reader.GetString(reader.GetOrdinal("chunk_id")),
+                Source = reader.GetString(reader.GetOrdinal("source")),
+                Title = reader.GetString(reader.GetOrdinal("title")),
+                Section = reader.IsDBNull(reader.GetOrdinal("section")) ? null : reader.GetString(reader.GetOrdinal("section")),
+                Content = reader.GetString(reader.GetOrdinal("content")),
+                ChunkIndex = reader.GetInt32(reader.GetOrdinal("chunk_index")),
+                TotalChunks = reader.GetInt32(reader.GetOrdinal("total_chunks")),
+                Strategy = Enum.Parse<ChunkingStrategy>(reader.GetString(reader.GetOrdinal("strategy"))),
+                IndexedAt = DateTime.Parse(reader.GetString(reader.GetOrdinal("indexed_at"))),
+                Embedding = embedding
+            };
+            chunks.Add((chunk, similarity));
+        }
+
+        return chunks.OrderByDescending(c => c.similarity).Take(topK);
     }
 
     public async Task<long> GetChunkCountAsync(ChunkingStrategy? strategy = null)

@@ -1,21 +1,14 @@
-// Additional models for RAG comparison agent
+using System.Text.Json.Serialization;
 
 public record TestQuestion
 {
     public required int Id { get; init; }
     public required string Question { get; init; }
+    [JsonPropertyName("expected_answer")]
     public string? ExpectedAnswer { get; init; }
+    [JsonPropertyName("expected_sources")]
     public string[]? ExpectedSources { get; init; }
     public string? Difficulty { get; init; }
+    [JsonPropertyName("key_concepts")]
     public string[]? KeyConcepts { get; init; }
-}
-
-public record ComparisonResult
-{
-    public required TestQuestion Question { get; init; }
-    public required string AnswerWithoutRag { get; init; }
-    public required string AnswerWithRag { get; init; }
-    public required long TimeWithoutRagMs { get; init; }
-    public required long TimeWithRagMs { get; init; }
-    public required string[] SourcesUsed { get; init; }
 }

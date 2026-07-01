@@ -1,41 +1,20 @@
-using System.Diagnostics;
-
 public class ComparisonAgent(
     ILlmService llmService,
-    RagPipeline ragPipeline)
+    EnhancedRagPipeline enhancedRag)
 {
-    public async Task<ComparisonResult> CompareAsync(TestQuestion question, CancellationToken ct = default)
+    public async Task<(string answer, RagResult ragResult)> AskWithRagAsync(
+        TestQuestion question,
+        RagPipelineMode mode,
+        CancellationToken ct = default)
     {
-        var systemPrompt = "You are an expert in Rust design patterns.";
-
-        var sw1 = Stopwatch.StartNew();
-        var answerWithoutRag = await llmService.AskAsync(question.Question, systemPrompt, ct);
-        sw1.Stop();
-
         var ragSystemPrompt = "You are an expert in Rust design patterns. Answer based ONLY on the provided context. If the context doesn't contain the answer, say so.";
 
-        var (ragContext, sources) = await ragPipeline.BuildContextAsync(question.Question, ct);
-        var ragPrompt = $"""
-Context information is below.
----------------------
-{ragContext}
----------------------
-Given the context information and not prior knowledge, answer the following question:
-{question.Question}
-""";
+        var ragResult = await enhancedRag.ExecuteAsync(question.Question, mode, ct);
 
-        var sw2 = Stopwatch.StartNew();
-        var answerWithRag = await llmService.AskAsync(ragPrompt, ragSystemPrompt, ct);
-        sw2.Stop();
+        var ragPrompt = "Context information is below.\n---------------------\n" + ragResult.Context +
+            "\n---------------------\nGiven the context information and not prior knowledge, answer the following question:\n" + question.Question;
 
-        return new ComparisonResult
-        {
-            Question = question,
-            AnswerWithoutRag = answerWithoutRag,
-            AnswerWithRag = answerWithRag,
-            TimeWithoutRagMs = sw1.ElapsedMilliseconds,
-            TimeWithRagMs = sw2.ElapsedMilliseconds,
-            SourcesUsed = sources
-        };
+        var answer = await llmService.AskAsync(ragPrompt, ragSystemPrompt, ct);
+        return (answer, ragResult);
     }
 }

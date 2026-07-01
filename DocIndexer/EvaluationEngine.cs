@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
@@ -29,42 +30,67 @@ public class EvaluationEngine
 
         using var llmService = new AnthropicLlmService();
         var vectorStore = new SqliteVectorStore(_dbPath);
-        var ragPipeline = new RagPipeline(
-            _embeddingService,
-            vectorStore);
-        var agent = new ComparisonAgent(llmService, ragPipeline);
+
+        IQueryRewriteService rewriteService = GetEnvBool("RAG_USE_LLM_REWRITE", false)
+            ? new LlmQueryRewriteService(llmService)
+            : new HeuristicQueryRewriteService();
+
+        var enhancedRag = new EnhancedRagPipeline(_embeddingService, vectorStore, rewriteService);
+        var agent = new ComparisonAgent(llmService, enhancedRag);
+
+        var modes = new[] { RagPipelineMode.Baseline, RagPipelineMode.WithThreshold,
+                           RagPipelineMode.WithReranker, RagPipelineMode.FullPipeline };
 
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("\n╔══════════════════════════════════════════════════════════════════════════════╗");
-        Console.WriteLine("║                    RAG vs NO-RAG COMPARISON REPORT                           ║");
+        Console.WriteLine("║         СРАВНЕНИЕ РЕЖИМОВ RAG PIPELINE                                        ║");
         Console.WriteLine("╚══════════════════════════════════════════════════════════════════════════════╝");
         Console.ResetColor();
 
-        for (int i = 0; i < questions.Count; i++)
+        foreach (var q in questions)
         {
             if (ct.IsCancellationRequested) break;
 
-            var q = questions[i];
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine($"\n--- Question {q.Id}/10: {q.Difficulty} ---");
             Console.ResetColor();
             Console.WriteLine($"Q: {q.Question}");
 
-            try
+            foreach (var mode in modes)
             {
-                var result = await agent.CompareAsync(q, ct);
+                try
+                {
+                    var sw = Stopwatch.StartNew();
+                    var (answerWithRag, ragResult) = await agent.AskWithRagAsync(q, mode, ct);
+                    sw.Stop();
 
-                await SaveEvaluationAsync(q, "without_rag", result.AnswerWithoutRag, null, result.TimeWithoutRagMs);
-                await SaveEvaluationAsync(q, "with_rag", result.AnswerWithRag, result.SourcesUsed, result.TimeWithRagMs);
+                    var score = ScoreAnswer(answerWithRag, q.KeyConcepts);
 
-                PrintComparison(result);
-                PrintKeyConceptsScore(result);
-            }
-            catch (Exception ex)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"❌ Ошибка при обработке вопроса {q.Id}: {ex.Message}");
-                Console.ResetColor();
+                    PrintComparison(answerWithRag, ragResult, mode);
+                    Console.WriteLine($"  Key concepts: {score.matched}/{q.KeyConcepts?.Length ?? 0} ({score.score:F2})");
+
+                    var chunksInfo = ragResult.Chunks?.Select(c => new
+                    {
+                        c.Chunk.Title,
+                        c.Chunk.Section,
+                        c.OriginalSimilarity,
+                        c.FinalScore,
+                        c.KeywordScore
+                    });
+                    var chunksInfoJson = chunksInfo != null ? JsonSerializer.Serialize(chunksInfo) : null;
+
+                    await SaveEvaluationAsync(q, $"with_rag_{mode}", answerWithRag, ragResult.Sources, sw.ElapsedMilliseconds,
+                        pipelineMode: mode.ToString(), rewrittenQuestion: ragResult.RewrittenQuestion,
+                        similarityThreshold: ragResult.SimilarityThreshold,
+                        topKPre: ragResult.TopKPre, topKPost: ragResult.TopKPost,
+                        keyConceptsScore: score.score, chunksInfo: chunksInfoJson);
+                }
+                catch (Exception ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Ошибка в режиме {mode}: {ex.Message}");
+                    Console.ResetColor();
+                }
             }
         }
 
@@ -86,21 +112,37 @@ public class EvaluationEngine
                 answer TEXT NOT NULL,
                 sources_used TEXT,
                 response_time_ms INTEGER,
+                pipeline_mode TEXT,
+                rewritten_question TEXT,
+                similarity_threshold REAL,
+                top_k_pre INTEGER,
+                top_k_post INTEGER,
+                key_concepts_score REAL,
+                chunks_info TEXT,
                 created_at TEXT NOT NULL
             )
         """;
         await cmd.ExecuteNonQueryAsync();
     }
 
-    private async Task SaveEvaluationAsync(TestQuestion question, string mode, string answer, string[]? sources, long timeMs)
+    private async Task SaveEvaluationAsync(
+        TestQuestion question, string mode, string answer, string[]? sources, long timeMs,
+        string? pipelineMode, string? rewrittenQuestion, float? similarityThreshold,
+        int? topKPre, int? topKPost, double? keyConceptsScore, string? chunksInfo)
     {
         using var conn = new SqliteConnection(ConnectionString);
         await conn.OpenAsync();
 
         var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO evaluations (question_id, question, mode, answer, sources_used, response_time_ms, created_at)
-            VALUES ($id, $question, $mode, $answer, $sources, $time, $now)
+            INSERT INTO evaluations
+                (question_id, question, mode, answer, sources_used, response_time_ms,
+                 pipeline_mode, rewritten_question, similarity_threshold,
+                 top_k_pre, top_k_post, key_concepts_score, chunks_info, created_at)
+            VALUES
+                ($id, $question, $mode, $answer, $sources, $time,
+                 $pipelineMode, $rewritten, $threshold,
+                 $topKPre, $topKPost, $score, $chunks, $now)
         """;
         cmd.Parameters.AddWithValue("$id", question.Id);
         cmd.Parameters.AddWithValue("$question", question.Question);
@@ -108,41 +150,30 @@ public class EvaluationEngine
         cmd.Parameters.AddWithValue("$answer", answer);
         cmd.Parameters.AddWithValue("$sources", sources != null ? JsonSerializer.Serialize(sources) : DBNull.Value);
         cmd.Parameters.AddWithValue("$time", timeMs);
+        cmd.Parameters.AddWithValue("$pipelineMode", (object?)pipelineMode ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$rewritten", (object?)rewrittenQuestion ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$threshold", similarityThreshold.HasValue ? (object)similarityThreshold.Value : DBNull.Value);
+        cmd.Parameters.AddWithValue("$topKPre", topKPre.HasValue ? (object)topKPre.Value : DBNull.Value);
+        cmd.Parameters.AddWithValue("$topKPost", topKPost.HasValue ? (object)topKPost.Value : DBNull.Value);
+        cmd.Parameters.AddWithValue("$score", keyConceptsScore.HasValue ? (object)keyConceptsScore.Value : DBNull.Value);
+        cmd.Parameters.AddWithValue("$chunks", (object?)chunksInfo ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
         await cmd.ExecuteNonQueryAsync();
     }
 
-    private void PrintComparison(ComparisonResult result)
+    private void PrintComparison(string answerWithRag, RagResult ragResult, RagPipelineMode mode)
     {
-        var q = result.Question;
-
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine("  WITHOUT RAG:");
-        Console.ResetColor();
-        Console.WriteLine($"  {Truncate(result.AnswerWithoutRag, 300)}");
-        Console.WriteLine($"  Length: {result.AnswerWithoutRag.Length} chars | Time: {result.TimeWithoutRagMs / 1000.0:F1}s");
-
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine("  WITH RAG:");
-        Console.ResetColor();
-        if (result.SourcesUsed.Length > 0)
-        {
-            Console.ForegroundColor = ConsoleColor.Magenta;
-            Console.WriteLine($"  Sources: {string.Join(", ", result.SourcesUsed)}");
-            Console.ResetColor();
-        }
-        Console.WriteLine($"  {Truncate(result.AnswerWithRag, 300)}");
-        Console.WriteLine($"  Length: {result.AnswerWithRag.Length} chars | Time: {result.TimeWithRagMs / 1000.0:F1}s");
-
-        // Simple analysis
-        var ragLonger = result.AnswerWithRag.Length > result.AnswerWithoutRag.Length;
-        var ragHasSources = result.SourcesUsed.Length > 0;
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.Write($"  Analysis: RAG ответ {(ragLonger ? "подробнее" : "короче")}");
-        if (ragHasSources)
-            Console.Write(" со ссылками на источники");
-        Console.WriteLine();
+        Console.WriteLine($"  Mode: {mode}");
+        if (ragResult.RewrittenQuestion != null)
+            Console.WriteLine($"  Rewritten: {ragResult.RewrittenQuestion}");
+        Console.WriteLine($"  Chunks: {ragResult.Chunks.Count} (threshold: {ragResult.SimilarityThreshold})");
+        foreach (var c in ragResult.Chunks)
+            Console.WriteLine($"    - {c.Chunk.Title} | orig_sim: {c.OriginalSimilarity:F3} | final: {c.FinalScore:F3} | keywords: {c.KeywordScore:F3}");
         Console.ResetColor();
+
+        Console.WriteLine($"  {Truncate(answerWithRag, 300)}");
+        Console.WriteLine($"  Length: {answerWithRag.Length} chars");
     }
 
     private async Task PrintSummaryAsync(List<TestQuestion> questions)
@@ -150,54 +181,40 @@ public class EvaluationEngine
         using var conn = new SqliteConnection(ConnectionString);
         await conn.OpenAsync();
 
-        var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT mode, AVG(response_time_ms), AVG(LENGTH(answer)) FROM evaluations GROUP BY mode";
-        using var reader = await cmd.ExecuteReaderAsync();
-
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("\n╔══════════════════════════════════════════════════════════════════════════════╗");
-        Console.WriteLine("║                              ИТОГОВАЯ СТАТИСТИКА                             ║");
-        Console.WriteLine("╠═══════════════╦════════════════╦══════════════════╦══════════════════════════╣");
-        Console.WriteLine("║ Режим         ║ Среднее время  ║ Средняя длина    ║ Всего вопросов           ║");
-        Console.WriteLine("╠═══════════════╬════════════════╬══════════════════╬══════════════════════════╣");
+        Console.WriteLine("║                    СРАВНЕНИЕ РЕЖИМОВ RAG PIPELINE                            ║");
+        Console.WriteLine("╠════════════════════╦══════════════════╦══════════════════╦═══════════════════╣");
+        Console.WriteLine("║ Режим              ║ Avg Time (ms)    ║ Avg Key Concept  ║ Count             ║");
+        Console.WriteLine("╠════════════════════╬══════════════════╬══════════════════╬═══════════════════╣");
 
-        var stats = new List<(string mode, double avgTime, double avgLen)>();
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = @"
+            SELECT mode,
+                   AVG(response_time_ms) as avg_time,
+                   AVG(key_concepts_score) as avg_score,
+                   COUNT(*) as cnt
+            FROM evaluations
+            WHERE mode LIKE 'with_rag_%'
+            GROUP BY mode
+            ORDER BY mode";
+        using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            stats.Add((
-                reader.GetString(0),
-                reader.GetDouble(1),
-                reader.GetDouble(2)
-            ));
+            var modeLabel = reader.GetString(0);
+            var avgTime = reader.IsDBNull(1) ? 0 : reader.GetDouble(1);
+            var avgScore = reader.IsDBNull(2) ? 0 : reader.GetDouble(2);
+            var count = reader.GetInt32(3);
+            Console.WriteLine($"║ {modeLabel,-18} ║ {avgTime,14:F0} ║ {avgScore,14:F3} ║ {count,14} ║");
         }
 
-        foreach (var s in stats)
-        {
-            var label = s.mode == "without_rag" ? "Без RAG" : "С RAG";
-            Console.WriteLine($"║ {label,-13} ║ {s.avgTime,12:F0} мс ║ {s.avgLen,14:F0} симв ║ {questions.Count,23} ║");
-        }
-
-        Console.WriteLine("╚═══════════════╩════════════════╩══════════════════╩══════════════════════════╝");
+        Console.WriteLine("╚════════════════════╩══════════════════╩══════════════════╩═══════════════════╝");
         Console.ResetColor();
     }
 
-    private void PrintKeyConceptsScore(ComparisonResult result)
+    private static (int matched, double score) ScoreAnswer(string answer, string[]? keyConcepts)
     {
-        var keyConcepts = result.Question.KeyConcepts;
-        if (keyConcepts == null || keyConcepts.Length == 0) return;
-
-        var scoreWithoutRag = ScoreAnswer(result.AnswerWithoutRag, keyConcepts);
-        var scoreWithRag = ScoreAnswer(result.AnswerWithRag, keyConcepts);
-
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine($"  Key concepts matched without RAG: {scoreWithoutRag.Item1}/{keyConcepts.Length} ({scoreWithoutRag.Item2:F2})");
-        Console.WriteLine($"  Key concepts matched with RAG:    {scoreWithRag.Item1}/{keyConcepts.Length} ({scoreWithRag.Item2:F2})");
-        Console.ResetColor();
-    }
-
-    private static (int matched, double score) ScoreAnswer(string answer, string[] keyConcepts)
-    {
-        if (keyConcepts.Length == 0) return (0, 0);
+        if (keyConcepts == null || keyConcepts.Length == 0) return (0, 0);
         var lower = answer.ToLowerInvariant();
         var matched = keyConcepts.Count(kc => lower.Contains(kc.ToLowerInvariant()));
         return (matched, (double)matched / keyConcepts.Length);
@@ -208,4 +225,7 @@ public class EvaluationEngine
         if (text.Length <= maxLen) return text;
         return text[..maxLen] + "...";
     }
+
+    private static bool GetEnvBool(string name, bool defaultValue) =>
+        bool.TryParse(Environment.GetEnvironmentVariable(name), out var v) ? v : defaultValue;
 }
