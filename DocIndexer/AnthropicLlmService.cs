@@ -3,16 +3,16 @@ using Anthropic.SDK.Messaging;
 
 public interface ILlmService
 {
-    Task<string> AskAsync(string prompt, string? systemPrompt = null, CancellationToken ct = default);
+    Task<string> AskAsync(string prompt, string? systemPrompt = null, int? maxTokens = null, CancellationToken ct = default);
 }
 
 public class AnthropicLlmService : ILlmService, IDisposable
 {
     private readonly AnthropicClient _client;
     private readonly string _model;
-    private readonly int _maxTokens;
+    private readonly int _defaultMaxTokens;
 
-    public AnthropicLlmService()
+    public AnthropicLlmService(int defaultMaxTokens = 1024)
     {
         var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
         if (string.IsNullOrEmpty(apiKey))
@@ -20,10 +20,10 @@ public class AnthropicLlmService : ILlmService, IDisposable
 
         _client = new AnthropicClient(apiKey);
         _model = Environment.GetEnvironmentVariable("ANTHROPIC_MODEL") ?? "claude-opus-4-5-20251101";
-        _maxTokens = 1024;
+        _defaultMaxTokens = defaultMaxTokens;
     }
 
-    public async Task<string> AskAsync(string prompt, string? systemPrompt = null, CancellationToken ct = default)
+    public async Task<string> AskAsync(string prompt, string? systemPrompt = null, int? maxTokens = null, CancellationToken ct = default)
     {
         var messages = new List<Message>
         {
@@ -33,7 +33,7 @@ public class AnthropicLlmService : ILlmService, IDisposable
         var parameters = new MessageParameters
         {
             Messages = messages,
-            MaxTokens = _maxTokens,
+            MaxTokens = maxTokens ?? _defaultMaxTokens,
             Model = _model,
             Stream = false,
         };

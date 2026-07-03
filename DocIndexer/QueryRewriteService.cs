@@ -27,7 +27,7 @@ public class LlmQueryRewriteService(ILlmService llm) : IQueryRewriteService
     {
         var prompt = "Rewrite the following question into a concise search query optimized for retrieving Rust design patterns documentation. Keep only key technical terms and concepts. Output ONLY the rewritten query, nothing else.\n\nQuestion: " + query + "\nSearch query:";
 
-        var rewritten = await llm.AskAsync(prompt, "You are a search query optimization assistant.", ct);
+        var rewritten = await llm.AskAsync(prompt, "You are a search query optimization assistant.", ct: ct);
         var result = rewritten.Trim().Trim('"', '\'');
         return string.IsNullOrWhiteSpace(result) ? query : result;
     }

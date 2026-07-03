@@ -17,4 +17,60 @@
     <Folder Include="patterns\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="bin\Debug\net10.0\patterns\additional_resources\design-principles.md" />
+    <None Include="bin\Debug\net10.0\patterns\additional_resources\index.md" />
+    <None Include="bin\Debug\net10.0\patterns\anti_patterns\borrow_clone.md" />
+    <None Include="bin\Debug\net10.0\patterns\anti_patterns\deny-warnings.md" />
+    <None Include="bin\Debug\net10.0\patterns\anti_patterns\deref.md" />
+    <None Include="bin\Debug\net10.0\patterns\anti_patterns\index.md" />
+    <None Include="bin\Debug\net10.0\patterns\functional\generics-type-classes.md" />
+    <None Include="bin\Debug\net10.0\patterns\functional\index.md" />
+    <None Include="bin\Debug\net10.0\patterns\functional\optics.md" />
+    <None Include="bin\Debug\net10.0\patterns\functional\paradigms.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\coercion-arguments.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\concat-format.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\ctor.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\default.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\deref.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\dtor-finally.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\ffi\accepting-strings.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\ffi\errors.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\ffi\intro.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\ffi\passing-strings.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\index.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\mem-replace.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\on-stack-dyn-dispatch.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\option-iter.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\pass-var-to-closure.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\priv-extend.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\return-consumed-arg-on-error.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\rustdoc-init.md" />
+    <None Include="bin\Debug\net10.0\patterns\idioms\temporary-mutability.md" />
+    <None Include="bin\Debug\net10.0\patterns\intro.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\behavioural\command.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\behavioural\interpreter.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\behavioural\intro.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\behavioural\newtype.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\behavioural\RAII.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\behavioural\strategy.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\behavioural\visitor.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\creational\builder.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\creational\fold.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\creational\intro.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\ffi\export.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\ffi\intro.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\ffi\wrappers.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\index.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\structural\compose-structs.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\structural\intro.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\structural\small-crates.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\structural\trait-for-bounds.md" />
+    <None Include="bin\Debug\net10.0\patterns\patterns\structural\unsafe-mods.md" />
+    <None Include="bin\Debug\net10.0\patterns\refactoring\index.md" />
+    <None Include="bin\Debug\net10.0\patterns\SUMMARY.md" />
+    <None Include="bin\Debug\net10.0\patterns\translations.md" />
+    <None Include="bin\Debug\net10.0\test-questions.json" />
+  </ItemGroup>
+
 </Project>

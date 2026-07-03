@@ -3,7 +3,8 @@ public enum RagPipelineMode
     Baseline,
     WithThreshold,
     WithReranker,
-    FullPipeline
+    FullPipeline,
+    CitationEnforced
 }
 
 public record RagResult(
@@ -16,7 +17,11 @@ public record RagResult(
     float SimilarityThreshold,
     int TopKPre,
     int TopKPost,
-    int FilteredCount
+    int FilteredCount,
+    float MaxChunkSimilarity,
+    ConfidenceLevel Confidence,
+    bool IsUnknown,
+    string? UnknownReason
 );
 
 public class EnhancedRagPipeline
@@ -26,6 +31,7 @@ public class EnhancedRagPipeline
     private readonly IQueryRewriteService? _rewriteService;
     private readonly SimilarityThresholdFilter _thresholdFilter;
     private readonly HeuristicReranker _reranker;
+    private readonly UnknownThresholdHandler _thresholdHandler;
     private readonly int _topKPre;
     private readonly int _topKPost;
     private readonly bool _enableRewrite;
@@ -41,6 +47,9 @@ public class EnhancedRagPipeline
         _rewriteService = rewriteService;
         _thresholdFilter = new SimilarityThresholdFilter(GetEnvFloat("RAG_SIMILARITY_THRESHOLD", 0.5f));
         _reranker = new HeuristicReranker();
+        _thresholdHandler = new UnknownThresholdHandler(
+            GetEnvFloat("RAG_UNKNOWN_THRESHOLD", 0.45f),
+            GetEnvFloat("RAG_HIGH_CONFIDENCE_THRESHOLD", 0.65f));
         _topKPre = GetEnvInt("RAG_TOP_K_PRE", 10);
         _topKPost = GetEnvInt("RAG_TOP_K_POST", 3);
         _enableRewrite = GetEnvBool("RAG_ENABLE_REWRITE", true);
@@ -52,10 +61,12 @@ public class EnhancedRagPipeline
         RagPipelineMode mode,
         CancellationToken ct = default)
     {
+        var isEnhanced = mode == RagPipelineMode.FullPipeline || mode == RagPipelineMode.CitationEnforced;
+
         var originalQuestion = question;
         string? rewrittenQuestion = null;
 
-        if (mode == RagPipelineMode.FullPipeline && _enableRewrite && _rewriteService != null)
+        if (isEnhanced && _enableRewrite && _rewriteService != null)
         {
             rewrittenQuestion = await _rewriteService.RewriteAsync(question, ct);
             question = rewrittenQuestion;
@@ -78,12 +89,28 @@ public class EnhancedRagPipeline
         }
 
         List<ScoredChunk> ranked;
-        if ((mode == RagPipelineMode.WithReranker || mode == RagPipelineMode.FullPipeline) && _enableRerank)
+        if ((mode == RagPipelineMode.WithReranker || mode == RagPipelineMode.FullPipeline || mode == RagPipelineMode.CitationEnforced) && _enableRerank)
             ranked = _reranker.Rerank(question, filtered);
         else
             ranked = filtered.Select(f => new ScoredChunk(f.chunk, f.similarity, f.similarity, 0)).ToList();
 
         var finalChunks = ranked.Take(_topKPost).ToList();
+
+        var maxScore = finalChunks.Count > 0 ? (float)finalChunks.Max(c => c.FinalScore) : 0f;
+        var assessment = mode == RagPipelineMode.CitationEnforced
+            ? _thresholdHandler.AssessRelevance(finalChunks)
+            : new RelevanceAssessment(CanAnswer: true, MaxSimilarity: maxScore, Reason: null, Confidence: ConfidenceLevel.High);
+
+        // Если релевантность слишком низкая — не тратим токены на формирование контекста
+        if (!assessment.CanAnswer)
+        {
+            return new RagResult(
+                Context: "", Sources: [], originalQuestion, rewrittenQuestion, finalChunks,
+                mode, _thresholdFilter.Threshold, _topKPre, _topKPost, filteredCount,
+                assessment.MaxSimilarity, assessment.Confidence,
+                IsUnknown: true, UnknownReason: assessment.Reason
+            );
+        }
 
         var contextParts = finalChunks.Select((c, i) =>
         {
@@ -104,7 +131,12 @@ public class EnhancedRagPipeline
             .Distinct()
             .ToArray();
 
-        return new RagResult(context, sources, originalQuestion, rewrittenQuestion, finalChunks, mode, _thresholdFilter.Threshold, _topKPre, _topKPost, filteredCount);
+        return new RagResult(
+            context, sources, originalQuestion, rewrittenQuestion, finalChunks,
+            mode, _thresholdFilter.Threshold, _topKPre, _topKPost, filteredCount,
+            assessment.MaxSimilarity, assessment.Confidence,
+            !assessment.CanAnswer, assessment.Reason
+        );
     }
 
     private static int GetEnvInt(string name, int defaultValue) =>

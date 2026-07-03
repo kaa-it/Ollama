@@ -1,10 +1,13 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using OllamaSharp;
 using OllamaSharp.Models;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
+
+// Load environment variables from .env file (if present) before anything else uses them
+DotEnvLoader.Load(".env");
 
 var mode = (args.Length > 0 ? args[0] : "help").ToLowerInvariant();
 var rootDir = args.Length > 1 ? args[1] : "../../../patterns";
@@ -53,6 +56,12 @@ switch (mode)
     case "demo":
         await RunDemoAsync(store, ollama);
         break;
+    case "citations":
+        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+        var strategyComp = new StrategyComparator(store);
+        await strategyComp.CompareAndReportAsync();
+        await RunCitationCompareAsync(ollama, dbPath);
+        break;
     case "compare":
         await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
         var comparator = new StrategyComparator(store);
@@ -65,6 +74,7 @@ switch (mode)
         Console.WriteLine("  index   - Index documents using FixedSize + Structural strategies");
         Console.WriteLine("  demo    - Interactive semantic search demo");
         Console.WriteLine("  compare - Run RAG vs No-RAG comparison (requires ANTHROPIC_API_KEY)");
+        Console.WriteLine("  citations - Run CitationEnforced RAG evaluation (requires ANTHROPIC_API_KEY)");
         Console.WriteLine("\nEnvironment variables:");
         Console.WriteLine("  ANTHROPIC_API_KEY       - Required for compare mode");
         Console.WriteLine("  ANTHROPIC_MODEL         - Default: claude-3-5-sonnet-20240620");
@@ -76,6 +86,12 @@ switch (mode)
         Console.WriteLine("  RAG_ENABLE_REWRITE=true - Enable query rewrite");
         Console.WriteLine("  RAG_ENABLE_RERANK=true  - Enable heuristic reranker");
         Console.WriteLine("  RAG_USE_LLM_REWRITE=false - Use LLM for rewrite (vs heuristic)");
+        Console.WriteLine("  RAG_UNKNOWN_THRESHOLD=0.45 - Min similarity for answering");
+        Console.WriteLine("  RAG_HIGH_CONFIDENCE_THRESHOLD=0.65 - High confidence threshold");
+        Console.WriteLine("  RAG_ENABLE_VALIDATION=true  - Enable citation validation");
+        Console.WriteLine("  RAG_CITATION_MIN_LENGTH=30  - Min citation quote length");
+        Console.WriteLine("  RAG_CITATION_MAX_LENGTH=200 - Max citation quote length");
+        Console.WriteLine("  RAG_MAX_RETRIES=3           - Max retries on validation failure");
         break;
     default:
         Console.ForegroundColor = ConsoleColor.Yellow;
@@ -174,7 +190,26 @@ static async Task RunCompareAsync(OllamaEmbeddingService ollama, string dbPath)
     var questions = JsonSerializer.Deserialize<List<TestQuestion>>(questionsJson, options) ?? [];
 
     var engine = new EvaluationEngine(dbPath, ollama);
-    await engine.RunAsync(questions);
+    await engine.RunAsync(questions, modes: [RagPipelineMode.CitationEnforced]);
+}
+
+static async Task RunCitationCompareAsync(OllamaEmbeddingService ollama, string dbPath)
+{
+    var questionsPath = "test-questions.json";
+    if (!File.Exists(questionsPath))
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"❌ Файл {questionsPath} не найден.");
+        Console.ResetColor();
+        return;
+    }
+
+    var questionsJson = await File.ReadAllTextAsync(questionsPath);
+    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+    var questions = JsonSerializer.Deserialize<List<TestQuestion>>(questionsJson, options) ?? [];
+
+    var engine = new EvaluationEngine(dbPath, ollama);
+    await engine.RunAsync(questions, modes: [RagPipelineMode.CitationEnforced]);
 }
 
 static void PrintResult(IndexedChunk r)
