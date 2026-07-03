@@ -70,6 +70,7 @@
     <None Include="bin\Debug\net10.0\patterns\refactoring\index.md" />
     <None Include="bin\Debug\net10.0\patterns\SUMMARY.md" />
     <None Include="bin\Debug\net10.0\patterns\translations.md" />
+    <None Include="bin\Debug\net10.0\test-chat-scenarios.json" />
     <None Include="bin\Debug\net10.0\test-questions.json" />
   </ItemGroup>
 

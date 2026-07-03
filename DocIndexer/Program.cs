@@ -7,7 +7,8 @@ using OllamaSharp.Models;
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 DotEnvLoader.Load();
 
-var rootDir = args.Length > 0 ? args[0] : "patterns";
+var mode = (args.Length > 0 ? args[0] : "help").ToLowerInvariant();
+var rootDir = args.Length > 1 ? args[1] : "patterns";
 var extensions = new[] { ".txt", ".md", ".cs", ".json", ".xml", ".yaml", ".yml", ".html", ".js", ".py" };
 var ollamaHost = Environment.GetEnvironmentVariable("OLLAMA_HOST") ?? "http://localhost:11434";
 var embeddingModel = Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "nomic-embed-text";
@@ -45,37 +46,114 @@ Console.ForegroundColor = ConsoleColor.Green;
 Console.WriteLine("✅ Ollama доступен\n");
 Console.ResetColor();
 
-Console.ForegroundColor = ConsoleColor.Blue;
-Console.WriteLine("📐 Индексация: Structural Strategy");
-Console.ResetColor();
-
-var progress = new Progress<double>(p =>
+switch (mode)
 {
-    Console.ForegroundColor = ConsoleColor.Cyan;
-    Console.Write($"\r  Прогресс: {p:P0}");
-    Console.ResetColor();
-});
-var pipeline = new IndexingPipeline(new StructuralChunkingStrategy(chunkSize, overlap), ollama, store);
-var indexResult = await pipeline.RunAsync(rootDir, extensions, progress);
-Console.ForegroundColor = ConsoleColor.Green;
-Console.WriteLine($"\n✅ Готово: {indexResult.ChunksCreated} чанков из {indexResult.FilesProcessed} файлов за {indexResult.Duration.TotalSeconds:F1}с\n");
-Console.ResetColor();
-
-var questionsPath = "test-questions.json";
-if (!File.Exists(questionsPath))
-{
-    Console.ForegroundColor = ConsoleColor.Red;
-    Console.WriteLine($"❌ Файл {questionsPath} не найден.");
-    Console.ResetColor();
-    return;
+    case "index":
+        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+        break;
+    case "citations":
+        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+        await RunCitationsAsync(dbPath, ollama);
+        break;
+    case "chat":
+        await RunChatAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+        break;
+    case "chat-test":
+        await RunChatTestAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+        break;
+    case "help" or "--help" or "-h":
+        Console.WriteLine("Usage: dotnet run -- [mode] [rootDir]");
+        Console.WriteLine("Modes: index, citations, chat, chat-test");
+        break;
+    default:
+        Console.WriteLine($"Unknown mode '{mode}'. Use: index, citations, chat, chat-test");
+        break;
 }
 
-var questionsJson = await File.ReadAllTextAsync(questionsPath);
-var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-var questions = JsonSerializer.Deserialize<List<TestQuestion>>(questionsJson, options) ?? [];
+// ============================================================
+// LOCAL FUNCTIONS
+// ============================================================
 
-var engine = new EvaluationEngine(dbPath, ollama);
-await engine.RunAsync(questions);
+async Task RunIndexingAsync(SqliteVectorStore store, OllamaEmbeddingService ollama, string rootDir, string[] extensions, int chunkSize, int overlap)
+{
+    Console.ForegroundColor = ConsoleColor.Blue;
+    Console.WriteLine("📐 Индексация: Structural Strategy");
+    Console.ResetColor();
+
+    var progress = new Progress<double>(p =>
+    {
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.Write($"\r  Прогресс: {p:P0}");
+        Console.ResetColor();
+    });
+    var pipeline = new IndexingPipeline(new StructuralChunkingStrategy(chunkSize, overlap), ollama, store);
+    var indexResult = await pipeline.RunAsync(rootDir, extensions, progress);
+    Console.ForegroundColor = ConsoleColor.Green;
+    Console.WriteLine($"\n✅ Готово: {indexResult.ChunksCreated} чанков из {indexResult.FilesProcessed} файлов за {indexResult.Duration.TotalSeconds:F1}с\n");
+    Console.ResetColor();
+}
+
+async Task RunCitationsAsync(string dbPath, OllamaEmbeddingService ollama)
+{
+    var questionsPath = "test-questions.json";
+    if (!File.Exists(questionsPath))
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"❌ Файл {questionsPath} не найден.");
+        Console.ResetColor();
+        return;
+    }
+
+    var questionsJson = await File.ReadAllTextAsync(questionsPath);
+    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+    var questions = JsonSerializer.Deserialize<List<TestQuestion>>(questionsJson, options) ?? [];
+
+    var engine = new EvaluationEngine(dbPath, ollama);
+    await engine.RunAsync(questions);
+}
+
+async Task RunChatAsync(SqliteVectorStore store, OllamaEmbeddingService ollama, string rootDir, string[] extensions, int chunkSize, int overlap)
+{
+    var count = await store.GetChunkCountAsync();
+    if (count == 0)
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("Индекс пуст, выполняется индексация...");
+        Console.ResetColor();
+        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+    }
+
+    using var llm = new AnthropicLlmService(4096);
+    var rewrite = new HeuristicQueryRewriteService();
+    var rag = new EnhancedRagPipeline(ollama, store, rewrite);
+    var validator = new CitationValidator();
+    var taskMemory = new TaskMemoryService(llm);
+    var chat = new ChatService(llm, rag, validator, taskMemory);
+
+    await chat.RunInteractiveAsync();
+}
+
+async Task RunChatTestAsync(SqliteVectorStore store, OllamaEmbeddingService ollama, string rootDir, string[] extensions, int chunkSize, int overlap)
+{
+    var count = await store.GetChunkCountAsync();
+    if (count == 0)
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("Индекс пуст, выполняется индексация...");
+        Console.ResetColor();
+        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+    }
+
+    using var llm = new AnthropicLlmService(4096);
+    var rewrite = new HeuristicQueryRewriteService();
+    var rag = new EnhancedRagPipeline(ollama, store, rewrite);
+    var validator = new CitationValidator();
+    var taskMemory = new TaskMemoryService(llm);
+    var chat = new ChatService(llm, rag, validator, taskMemory);
+    var test = new ChatScenarioTest(chat, taskMemory);
+
+    await test.RunScenariosAsync("test-chat-scenarios.json");
+}
 
 // ============================================================
 // MODELS

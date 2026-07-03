@@ -110,8 +110,7 @@ public class ComparisonAgent(
         var topChunk = ragResult.Chunks.OrderByDescending(c => c.FinalScore).First();
 
         // Берём quote без markdown-заголовков — ищем первое предложение с существительным
-        var content = topChunk.Chunk.Content;
-        var quote = ExtractSafeQuote(content, 150);
+        var quote = CitationAnswerParser.ExtractSafeQuote(topChunk.Chunk.Content, 150);
 
         return new CitationAnswer(
             Answer: $"Based on the retrieved context [CITATION:0]: {quote}",
@@ -133,36 +132,6 @@ public class ComparisonAgent(
                 new Citation(Quote: quote, SourceIndex: 0, Explanation: errorReason ?? "Top retrieved chunk")
             ]
         );
-    }
-
-    /// <summary>
-    /// Извлекает цитату, которая гарантированно найдётся в контенте (без markdown-заголовков).
-    /// </summary>
-    private static string ExtractSafeQuote(string content, int maxLength)
-    {
-        // Убираем markdown заголовки в начале
-        var lines = content.Split('\n');
-        var bodyStart = 0;
-        for (int i = 0; i < lines.Length; i++)
-        {
-            var trimmed = lines[i].TrimStart();
-            if (trimmed.StartsWith('#')) continue; // skip headings
-            if (string.IsNullOrWhiteSpace(lines[i])) continue; // skip empty lines
-            bodyStart = i;
-            break;
-        }
-
-        var body = string.Join(" ", lines[bodyStart..]).Trim();
-        if (body.Length <= maxLength) return body;
-
-        // Ищем конец предложения
-        var end = maxLength;
-        while (end > maxLength / 2 && body[end] != '.' && body[end] != '!' && body[end] != '?')
-            end--;
-        if (end <= maxLength / 2) end = maxLength;
-        else end++; // include the punctuation
-
-        return body[..end];
     }
 
     private static bool GetEnvBool(string name, bool defaultValue) =>

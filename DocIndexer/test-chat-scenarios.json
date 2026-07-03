@@ -1,0 +1,44 @@
+[
+  {
+    "name": "Rust Design Patterns Deep Dive",
+    "initialGoal": "Learn about Rust design patterns",
+    "messages": [
+      "What is the Builder pattern in Rust?",
+      "Why would I use it instead of a large constructor?",
+      "Can you show a real code example?",
+      "How does it compare to the Factory pattern?",
+      "What about RAII guards?",
+      "When should I prefer RAII over manual resource management?",
+      "Explain the Strategy pattern without traits",
+      "Is there a performance cost to using closures as strategies?",
+      "How about the Newtype pattern?",
+      "What are its primary use cases?",
+      "When should I avoid Newtype?",
+      "What is the Visitor pattern and can it be implemented in Rust?",
+      "What are alternatives to Visitor in Rust?",
+      "How does struct decomposition help with borrowing?",
+      "Summarize all the patterns we discussed and their trade-offs"
+    ]
+  },
+  {
+    "name": "Rust Anti-patterns Analysis",
+    "initialGoal": "Understand common anti-patterns in Rust",
+    "messages": [
+      "What is 'Clone to satisfy the borrow checker'?",
+      "Why is it considered an anti-pattern?",
+      "When is cloning actually acceptable?",
+      "What is the #[deny(warnings)] anti-pattern?",
+      "Why is it bad for library authors?",
+      "What are the alternatives to denying warnings?",
+      "Explain struct decomposition for independent borrowing",
+      "When is it useful and when is it overkill?",
+      "What anti-patterns exist with the Drop trait?",
+      "How can I avoid them?",
+      "Is using unwrap() everywhere an anti-pattern?",
+      "What is the unwrap_or idiom and how does it help?",
+      "What about shadowing variables in match arms?",
+      "How does eager cloning affect performance?",
+      "Summarize the anti-patterns to avoid in production Rust code"
+    ]
+  }
+]

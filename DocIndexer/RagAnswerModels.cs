@@ -13,7 +13,7 @@ public record Citation(
     string? Explanation
 );
 
-public enum ConfidenceLevel { High, Medium, Low, Unknown }
+public enum ConfidenceLevel { Unknown = 0, Low = 1, Medium = 2, High = 3 }
 
 public record CitationAnswer(
     string Answer,

@@ -143,4 +143,29 @@ public class CitationAnswerParser
 
     private static string NormalizeWhitespace(string text) =>
         Regex.Replace(text.Trim(), @"\s+", " ");
+
+    public static string ExtractSafeQuote(string content, int maxLength)
+    {
+        var lines = content.Split('\n');
+        var bodyStart = 0;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var trimmed = lines[i].TrimStart();
+            if (trimmed.StartsWith('#')) continue;
+            if (string.IsNullOrWhiteSpace(lines[i])) continue;
+            bodyStart = i;
+            break;
+        }
+
+        var body = string.Join(" ", lines[bodyStart..]).Trim();
+        if (body.Length <= maxLength) return body;
+
+        var end = maxLength;
+        while (end > maxLength / 2 && body[end] != '.' && body[end] != '!' && body[end] != '?')
+            end--;
+        if (end <= maxLength / 2) end = maxLength;
+        else end++;
+
+        return body[..end];
+    }
 }
