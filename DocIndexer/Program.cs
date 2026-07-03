@@ -5,12 +5,9 @@ using OllamaSharp;
 using OllamaSharp.Models;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
+DotEnvLoader.Load();
 
-// Load environment variables from .env file (if present) before anything else uses them
-DotEnvLoader.Load(".env");
-
-var mode = (args.Length > 0 ? args[0] : "help").ToLowerInvariant();
-var rootDir = args.Length > 1 ? args[1] : "../../../patterns";
+var rootDir = args.Length > 0 ? args[0] : "patterns";
 var extensions = new[] { ".txt", ".md", ".cs", ".json", ".xml", ".yaml", ".yml", ".html", ".js", ".py" };
 var ollamaHost = Environment.GetEnvironmentVariable("OLLAMA_HOST") ?? "http://localhost:11434";
 var embeddingModel = Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "nomic-embed-text";
@@ -45,188 +42,46 @@ catch (Exception ex)
 }
 
 Console.ForegroundColor = ConsoleColor.Green;
-Console.WriteLine("\n✅ Ollama доступен");
+Console.WriteLine("✅ Ollama доступен\n");
 Console.ResetColor();
 
-switch (mode)
+Console.ForegroundColor = ConsoleColor.Blue;
+Console.WriteLine("📐 Индексация: Structural Strategy");
+Console.ResetColor();
+
+var progress = new Progress<double>(p =>
 {
-    case "index":
-        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
-        break;
-    case "demo":
-        await RunDemoAsync(store, ollama);
-        break;
-    case "citations":
-        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
-        var strategyComp = new StrategyComparator(store);
-        await strategyComp.CompareAndReportAsync();
-        await RunCitationCompareAsync(ollama, dbPath);
-        break;
-    case "compare":
-        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
-        var comparator = new StrategyComparator(store);
-        await comparator.CompareAndReportAsync();
-        await RunCompareAsync(ollama, dbPath);
-        break;
-    case "help" or "--help" or "-h":
-        Console.WriteLine("Usage: dotnet run -- [mode] [rootDir]");
-        Console.WriteLine("Modes:");
-        Console.WriteLine("  index   - Index documents using FixedSize + Structural strategies");
-        Console.WriteLine("  demo    - Interactive semantic search demo");
-        Console.WriteLine("  compare - Run RAG vs No-RAG comparison (requires ANTHROPIC_API_KEY)");
-        Console.WriteLine("  citations - Run CitationEnforced RAG evaluation (requires ANTHROPIC_API_KEY)");
-        Console.WriteLine("\nEnvironment variables:");
-        Console.WriteLine("  ANTHROPIC_API_KEY       - Required for compare mode");
-        Console.WriteLine("  ANTHROPIC_MODEL         - Default: claude-3-5-sonnet-20240620");
-        Console.WriteLine("  OLLAMA_HOST             - Default: http://localhost:11434");
-        Console.WriteLine("  EMBEDDING_MODEL         - Default: nomic-embed-text");
-        Console.WriteLine("  RAG_TOP_K_PRE=10        - Pre-filter K (vector search)");
-        Console.WriteLine("  RAG_TOP_K_POST=3        - Post-filter K (sent to LLM)");
-        Console.WriteLine("  RAG_SIMILARITY_THRESHOLD=0.5 - Min similarity for filter");
-        Console.WriteLine("  RAG_ENABLE_REWRITE=true - Enable query rewrite");
-        Console.WriteLine("  RAG_ENABLE_RERANK=true  - Enable heuristic reranker");
-        Console.WriteLine("  RAG_USE_LLM_REWRITE=false - Use LLM for rewrite (vs heuristic)");
-        Console.WriteLine("  RAG_UNKNOWN_THRESHOLD=0.45 - Min similarity for answering");
-        Console.WriteLine("  RAG_HIGH_CONFIDENCE_THRESHOLD=0.65 - High confidence threshold");
-        Console.WriteLine("  RAG_ENABLE_VALIDATION=true  - Enable citation validation");
-        Console.WriteLine("  RAG_CITATION_MIN_LENGTH=30  - Min citation quote length");
-        Console.WriteLine("  RAG_CITATION_MAX_LENGTH=200 - Max citation quote length");
-        Console.WriteLine("  RAG_MAX_RETRIES=3           - Max retries on validation failure");
-        break;
-    default:
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("Неизвестный режим. Используйте: index, demo, или compare");
-        Console.ResetColor();
-        break;
+    Console.ForegroundColor = ConsoleColor.Cyan;
+    Console.Write($"\r  Прогресс: {p:P0}");
+    Console.ResetColor();
+});
+var pipeline = new IndexingPipeline(new StructuralChunkingStrategy(chunkSize, overlap), ollama, store);
+var indexResult = await pipeline.RunAsync(rootDir, extensions, progress);
+Console.ForegroundColor = ConsoleColor.Green;
+Console.WriteLine($"\n✅ Готово: {indexResult.ChunksCreated} чанков из {indexResult.FilesProcessed} файлов за {indexResult.Duration.TotalSeconds:F1}с\n");
+Console.ResetColor();
+
+var questionsPath = "test-questions.json";
+if (!File.Exists(questionsPath))
+{
+    Console.ForegroundColor = ConsoleColor.Red;
+    Console.WriteLine($"❌ Файл {questionsPath} не найден.");
+    Console.ResetColor();
+    return;
 }
 
-static async Task RunIndexingAsync(SqliteVectorStore store, OllamaEmbeddingService ollama, string rootDir, string[] extensions, int chunkSize, int overlap)
-{
-    Console.ForegroundColor = ConsoleColor.Blue;
-    Console.WriteLine("\n📦 Индексация: Fixed Size Strategy (chunk=512, overlap=50)");
-    Console.ResetColor();
+var questionsJson = await File.ReadAllTextAsync(questionsPath);
+var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+var questions = JsonSerializer.Deserialize<List<TestQuestion>>(questionsJson, options) ?? [];
 
-    var progress1 = new Progress<double>(p =>
-    {
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.Write($"\r  Прогресс: {p:P0}");
-        Console.ResetColor();
-    });
-    var pipeline1 = new IndexingPipeline(new FixedSizeChunkingStrategy(chunkSize, overlap), ollama, store);
-    var result1 = await pipeline1.RunAsync(rootDir, extensions, progress1);
-    Console.ForegroundColor = ConsoleColor.Green;
-    Console.WriteLine($"\n✅ Готово: {result1.ChunksCreated} чанков из {result1.FilesProcessed} файлов за {result1.Duration.TotalSeconds:F1}с");
-    Console.ResetColor();
-
-    Console.ForegroundColor = ConsoleColor.Blue;
-    Console.WriteLine("\n📐 Индексация: Structural Strategy");
-    Console.ResetColor();
-
-    var progress2 = new Progress<double>(p =>
-    {
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.Write($"\r  Прогресс: {p:P0}");
-        Console.ResetColor();
-    });
-    var pipeline2 = new IndexingPipeline(new StructuralChunkingStrategy(chunkSize, overlap), ollama, store);
-    var result2 = await pipeline2.RunAsync(rootDir, extensions, progress2);
-    Console.ForegroundColor = ConsoleColor.Green;
-    Console.WriteLine($"\n✅ Готово: {result2.ChunksCreated} чанков из {result2.FilesProcessed} файлов за {result2.Duration.TotalSeconds:F1}с");
-    Console.ResetColor();
-}
-
-static async Task RunDemoAsync(SqliteVectorStore store, OllamaEmbeddingService ollama)
-{
-    Console.ForegroundColor = ConsoleColor.Blue;
-    Console.WriteLine("\n🔍 ДЕМО СЕМАНТИЧЕСКОГО ПОИСКА");
-    Console.ResetColor();
-
-    while (true)
-    {
-        Console.Write("\nВведите запрос (или 'exit'): ");
-        var query = Console.ReadLine();
-        if (string.IsNullOrWhiteSpace(query) || query == "exit") break;
-
-        try
-        {
-            var queryEmbedding = await ollama.GenerateQueryEmbeddingAsync(query);
-
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("\n--- Fixed Size результаты ---");
-            Console.ResetColor();
-            var fixedResults = await store.SearchSimilarAsync(queryEmbedding, 3, ChunkingStrategy.FixedSize);
-            foreach (var r in fixedResults)
-                PrintResult(r);
-
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("\n--- Structural результаты ---");
-            Console.ResetColor();
-            var structResults = await store.SearchSimilarAsync(queryEmbedding, 3, ChunkingStrategy.Structural);
-            foreach (var r in structResults)
-                PrintResult(r);
-        }
-        catch (Exception ex)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"❌ Ошибка поиска: {ex.Message}");
-            Console.ResetColor();
-        }
-    }
-}
-
-static async Task RunCompareAsync(OllamaEmbeddingService ollama, string dbPath)
-{
-    var questionsPath = "test-questions.json";
-    if (!File.Exists(questionsPath))
-    {
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"❌ Файл {questionsPath} не найден. Убедитесь что он находится в рабочей директории.");
-        Console.ResetColor();
-        return;
-    }
-
-    var questionsJson = await File.ReadAllTextAsync(questionsPath);
-    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-    var questions = JsonSerializer.Deserialize<List<TestQuestion>>(questionsJson, options) ?? [];
-
-    var engine = new EvaluationEngine(dbPath, ollama);
-    await engine.RunAsync(questions, modes: [RagPipelineMode.CitationEnforced]);
-}
-
-static async Task RunCitationCompareAsync(OllamaEmbeddingService ollama, string dbPath)
-{
-    var questionsPath = "test-questions.json";
-    if (!File.Exists(questionsPath))
-    {
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"❌ Файл {questionsPath} не найден.");
-        Console.ResetColor();
-        return;
-    }
-
-    var questionsJson = await File.ReadAllTextAsync(questionsPath);
-    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-    var questions = JsonSerializer.Deserialize<List<TestQuestion>>(questionsJson, options) ?? [];
-
-    var engine = new EvaluationEngine(dbPath, ollama);
-    await engine.RunAsync(questions, modes: [RagPipelineMode.CitationEnforced]);
-}
-
-static void PrintResult(IndexedChunk r)
-{
-    var preview = r.Content.Length > 150 ? r.Content[..150] + "..." : r.Content;
-    Console.ForegroundColor = ConsoleColor.Magenta;
-    Console.Write($"  [{r.Strategy}] ");
-    Console.ResetColor();
-    Console.WriteLine($"{r.Title} | {r.Section ?? "N/A"} | chunk {r.ChunkIndex + 1}/{r.TotalChunks}");
-    Console.WriteLine($"    {preview.Replace('\n', ' ')}");
-}
+var engine = new EvaluationEngine(dbPath, ollama);
+await engine.RunAsync(questions);
 
 // ============================================================
 // MODELS
 // ============================================================
 
-public enum ChunkingStrategy { FixedSize, Structural }
+public enum ChunkingStrategy { Structural }
 
 public record DocumentChunk
 {
@@ -292,7 +147,7 @@ public interface IChunkingStrategy
 
 public class FixedSizeChunkingStrategy(int chunkSize = 512, int overlap = 50) : IChunkingStrategy
 {
-    public ChunkingStrategy StrategyType => ChunkingStrategy.FixedSize;
+    public ChunkingStrategy StrategyType => ChunkingStrategy.Structural;
 
     public IEnumerable<DocumentChunk> Chunk(string filePath, string content)
     {
@@ -327,7 +182,7 @@ public class FixedSizeChunkingStrategy(int chunkSize = 512, int overlap = 50) : 
                 Content = content_,
                 ChunkIndex = index,
                 TotalChunks = totalChunks,
-                Strategy = ChunkingStrategy.FixedSize,
+                Strategy = ChunkingStrategy.Structural,
                 IndexedAt = now
             };
         }
@@ -606,23 +461,11 @@ public class OllamaEmbeddingService(string host = "http://localhost:11434", stri
 
     public async Task<float[]> GenerateQueryEmbeddingAsync(string query, CancellationToken ct = default)
     {
-        var textList = new List<string> { query };
-        var batches = new List<List<string>> { textList };
-        var results = new float[1][];
-        var index = 0;
-
-        foreach (var b in batches)
-        {
-            var prefixedTexts = b.Select(t => $"search_query: {t}").ToList();
-            var embeddings = await EmbedWithRetryAsync(prefixedTexts, ct);
-            foreach (var emb in embeddings)
-            {
-                if (emb.Length != 768)
-                    throw new InvalidOperationException($"Expected 768-dimensional embedding, got {emb.Length}");
-                results[index++] = emb;
-            }
-        }
-        return results[0];
+        var prefixedTexts = new[] { $"search_query: {query}" };
+        var embeddings = await EmbedWithRetryAsync(prefixedTexts.ToList(), ct);
+        if (embeddings[0].Length != 768)
+            throw new InvalidOperationException($"Expected 768-dimensional embedding, got {embeddings[0].Length}");
+        return embeddings[0];
     }
 
     public async Task<float[][]> GenerateEmbeddingsAsync(IEnumerable<string> texts, CancellationToken ct = default)
@@ -1052,61 +895,5 @@ public class IndexingPipeline(
 
         sw.Stop();
         return new IndexingResult(files.Count, total, sw.Elapsed);
-    }
-}
-
-// ============================================================
-// STRATEGY COMPARATOR
-// ============================================================
-
-public class StrategyComparator(IVectorStore vectorStore)
-{
-    public async Task CompareAndReportAsync()
-    {
-        var fixedStats = await vectorStore.GetStatsAsync(ChunkingStrategy.FixedSize);
-        var structStats = await vectorStore.GetStatsAsync(ChunkingStrategy.Structural);
-
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("\n╔══════════════════════════════════════════════════════════════╗");
-        Console.WriteLine("║           СРАВНЕНИЕ СТРАТЕГИЙ CHUNKING'А                     ║");
-        Console.WriteLine("╠════════════════════╦══════════════════╦══════════════════════╣");
-        Console.WriteLine("║ Метрика            ║ FixedSize        ║ Structural           ║");
-        Console.WriteLine("╠════════════════════╬══════════════════╬══════════════════════╣");
-        Console.WriteLine($"║ Чанков             ║ {fixedStats.ChunkCount,16} ║ {structStats.ChunkCount,17}    ║");
-        Console.WriteLine($"║ Средний размер     ║ {fixedStats.AvgChunkLengthChars,8:F0} симв    ║ {structStats.AvgChunkLengthChars,9:F0} симв       ║");
-        Console.WriteLine($"║ Средний размер     ║ {fixedStats.AvgChunkLengthWords,8:F0} слова   ║ {structStats.AvgChunkLengthWords,9:F0} слова      ║");
-        Console.WriteLine($"║ Файлов >1 чанка    ║ {fixedStats.FilesWithMultipleChunks,16} ║ {structStats.FilesWithMultipleChunks,17}    ║");
-        Console.WriteLine($"║ Секций распознано  ║ {"N/A",16} ║ {structStats.SectionsDetected?.ToString() ?? "N/A",17}    ║");
-        Console.WriteLine("╚════════════════════╩══════════════════╩══════════════════════╝");
-        Console.ResetColor();
-
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("\n  ВЫВОД:");
-        Console.ResetColor();
-
-        if (structStats.ChunkCount < fixedStats.ChunkCount)
-        {
-            Console.WriteLine("  ✅ Structural стратегия создала меньше чанков, что указывает на");
-            Console.WriteLine("     более осмысленное разбиение документа.");
-        }
-        else
-        {
-            Console.WriteLine("  ℹ️  FixedSize стратегия создала меньше или столько же чанков.");
-        }
-
-        if (structStats.AvgChunkLengthChars > fixedStats.AvgChunkLengthChars)
-        {
-            Console.WriteLine("  ✅ Structural чанки в среднем длиннее — секции сохраняют");
-            Console.WriteLine("     контекст и целостность смысловых блоков.");
-        }
-
-        if (structStats.SectionsDetected > 0)
-        {
-            Console.WriteLine($"  ✅ Structural распознала {structStats.SectionsDetected} секций,");
-            Console.WriteLine("     что помогает в поиске по структурным элементам.");
-        }
-
-        Console.WriteLine("\n  📌 Для Markdown, C# и TXT файлов Structural стратегия предпочтительнее.");
-        Console.WriteLine("  📌 Для неизвестных форматов используется fallback на FixedSize.\n");
     }
 }
