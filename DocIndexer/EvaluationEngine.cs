@@ -6,38 +6,32 @@ public class EvaluationEngine
 {
     private readonly string _dbPath;
     private readonly IEmbeddingService _embeddingService;
+    private readonly ILlmService _llmService;
     private string ConnectionString => $"Data Source={_dbPath}";
 
-    public EvaluationEngine(string dbPath, IEmbeddingService embeddingService)
+    private readonly bool _dbAlreadyExisted;
+
+    public EvaluationEngine(string dbPath, IEmbeddingService embeddingService, ILlmService llmService, bool dbAlreadyExisted = false)
     {
         _dbPath = dbPath;
         _embeddingService = embeddingService;
+        _llmService = llmService;
+        _dbAlreadyExisted = dbAlreadyExisted;
     }
 
     public async Task RunAsync(List<TestQuestion> questions, CancellationToken ct = default)
     {
-        var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
-        if (string.IsNullOrEmpty(apiKey))
-        {
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("\n⚠️  ANTHROPIC_API_KEY не задан.");
-            Console.WriteLine("   Установите: export ANTHROPIC_API_KEY=sk-ant-...");
-            Console.ResetColor();
-            return;
-        }
-
         await InitializeCitationEvaluationTableAsync();
 
-        using var llmService = new AnthropicLlmService();
         var vectorStore = new SqliteVectorStore(_dbPath);
 
         IQueryRewriteService rewriteService = GetEnvBool("RAG_USE_LLM_REWRITE", false)
-            ? new LlmQueryRewriteService(llmService)
+            ? new LlmQueryRewriteService(_llmService)
             : new HeuristicQueryRewriteService();
 
-        var enhancedRag = new EnhancedRagPipeline(_embeddingService, vectorStore, rewriteService);
+        var enhancedRag = new EnhancedRagPipeline(_embeddingService, vectorStore, rewriteService, _dbAlreadyExisted);
         var validator = new CitationValidator();
-        var agent = new ComparisonAgent(llmService, enhancedRag, validator);
+        var agent = new ComparisonAgent(_llmService, enhancedRag, validator);
 
         var mode = RagPipelineMode.CitationEnforced;
 

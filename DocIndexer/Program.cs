@@ -16,6 +16,7 @@ var chunkSize = int.TryParse(Environment.GetEnvironmentVariable("CHUNK_SIZE"), o
 var overlap = int.TryParse(Environment.GetEnvironmentVariable("OVERLAP"), out var ov) ? ov : 50;
 
 var store = new SqliteVectorStore(dbPath);
+var dbAlreadyExisted = File.Exists(dbPath);
 await store.InitializeAsync();
 
 var provider = Environment.GetEnvironmentVariable("EMBEDDING_PROVIDER")?.ToLowerInvariant();
@@ -31,6 +32,15 @@ else
         Environment.GetEnvironmentVariable("OPENAI_EMBEDDING_MODEL") ?? "text-embedding-nomic-embed-text-v1.5",
         Environment.GetEnvironmentVariable("OPENAI_API_KEY"));
 }
+
+var llmProvider = Environment.GetEnvironmentVariable("LLM_PROVIDER")?.ToLowerInvariant();
+using ILlmService llm = llmProvider == "anthropic"
+    ? new AnthropicLlmService(4096)
+    : new OpenAiCompatibleLlmService(
+        Environment.GetEnvironmentVariable("OPENAI_LLM_URL") ?? "http://localhost:1234",
+        Environment.GetEnvironmentVariable("OPENAI_LLM_MODEL") ?? "qwen/qwen3.6-35b-a3b",
+        Environment.GetEnvironmentVariable("OPENAI_API_KEY"),
+        4096);
 
 if (embeddingService is OllamaEmbeddingService ollama)
 {
@@ -62,27 +72,70 @@ if (embeddingService is OllamaEmbeddingService ollama)
         return;
     }
 }
-else
+else if (embeddingService is OpenAiCompatibleEmbeddingService openAiEmbedding)
 {
-    Console.ForegroundColor = ConsoleColor.Green;
-    Console.WriteLine($"✅ Используется OpenAiCompatibleEmbeddingService\n");
+    Console.ForegroundColor = ConsoleColor.Blue;
+    Console.WriteLine("Проверка OpenAiCompatibleEmbeddingService...");
     Console.ResetColor();
+
+    try
+    {
+        var available = await openAiEmbedding.CheckAvailabilityAsync();
+        if (available)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("✅ OpenAiCompatibleEmbeddingService доступен\n");
+            Console.ResetColor();
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("❌ OpenAiCompatibleEmbeddingService недоступен");
+            Console.ResetColor();
+            return;
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"❌ OpenAiCompatibleEmbeddingService недоступен: {ex.Message}");
+        Console.ResetColor();
+        return;
+    }
 }
 
 switch (mode)
 {
     case "index":
-        await RunIndexingAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
+        if (dbAlreadyExisted)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"⚠️  База данных '{dbPath}' уже существует. Индексация пропущена.");
+            Console.ResetColor();
+        }
+        else
+        {
+            await RunIndexingAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
+        }
         break;
     case "citations":
-        await RunIndexingAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
-        await RunCitationsAsync(dbPath, embeddingService);
+        if (!dbAlreadyExisted)
+        {
+            await RunIndexingAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"⚠️  База данных '{dbPath}' уже существует. Индексация пропущена.");
+            Console.ResetColor();
+        }
+        await RunCitationsAsync(dbPath, embeddingService, llm, dbAlreadyExisted);
         break;
     case "chat":
-        await RunChatAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
+        await RunChatAsync(store, embeddingService, llm, rootDir, extensions, chunkSize, overlap);
         break;
     case "chat-test":
-        await RunChatTestAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
+        await RunChatTestAsync(store, embeddingService, llm, rootDir, extensions, chunkSize, overlap);
         break;
     case "help" or "--help" or "-h":
         Console.WriteLine("Usage: dotnet run -- [mode] [rootDir]");
@@ -92,6 +145,8 @@ switch (mode)
         Console.WriteLine($"Unknown mode '{mode}'. Use: index, citations, chat, chat-test");
         break;
 }
+
+(embeddingService as IDisposable)?.Dispose();
 
 // ============================================================
 // LOCAL FUNCTIONS
@@ -116,7 +171,7 @@ async Task RunIndexingAsync(IVectorStore store, IEmbeddingService embeddingServi
     Console.ResetColor();
 }
 
-async Task RunCitationsAsync(string dbPath, IEmbeddingService embeddingService)
+async Task RunCitationsAsync(string dbPath, IEmbeddingService embeddingService, ILlmService llm, bool dbAlreadyExisted)
 {
     var questionsPath = "test-questions.json";
     if (!File.Exists(questionsPath))
@@ -131,24 +186,22 @@ async Task RunCitationsAsync(string dbPath, IEmbeddingService embeddingService)
     var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
     var questions = JsonSerializer.Deserialize<List<TestQuestion>>(questionsJson, options) ?? [];
 
-    var engine = new EvaluationEngine(dbPath, embeddingService);
+    var engine = new EvaluationEngine(dbPath, embeddingService, llm, dbAlreadyExisted);
     await engine.RunAsync(questions);
 }
 
-async Task RunChatAsync(SqliteVectorStore store, IEmbeddingService embeddingService, string rootDir, string[] extensions, int chunkSize, int overlap)
+async Task RunChatAsync(IVectorStore store, IEmbeddingService embeddingService, ILlmService llm, string rootDir, string[] extensions, int chunkSize, int overlap)
 {
-    var count = await store.GetChunkCountAsync();
-    if (count == 0)
+    if (!dbAlreadyExisted)
     {
         Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("Индекс пуст, выполняется индексация...");
+        Console.WriteLine("База данных отсутствует, выполняется индексация...");
         Console.ResetColor();
         await RunIndexingAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
     }
 
-    using var llm = new AnthropicLlmService(4096);
     var rewrite = new HeuristicQueryRewriteService();
-    var rag = new EnhancedRagPipeline(embeddingService, store, rewrite);
+    var rag = new EnhancedRagPipeline(embeddingService, store, rewrite, dbAlreadyExisted);
     var validator = new CitationValidator();
     var taskMemory = new TaskMemoryService(llm);
     var chat = new ChatService(llm, rag, validator, taskMemory);
@@ -156,20 +209,18 @@ async Task RunChatAsync(SqliteVectorStore store, IEmbeddingService embeddingServ
     await chat.RunInteractiveAsync();
 }
 
-async Task RunChatTestAsync(SqliteVectorStore store, IEmbeddingService embeddingService, string rootDir, string[] extensions, int chunkSize, int overlap)
+async Task RunChatTestAsync(IVectorStore store, IEmbeddingService embeddingService, ILlmService llm, string rootDir, string[] extensions, int chunkSize, int overlap)
 {
-    var count = await store.GetChunkCountAsync();
-    if (count == 0)
+    if (!dbAlreadyExisted)
     {
         Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("Индекс пуст, выполняется индексация...");
+        Console.WriteLine("База данных отсутствует, выполняется индексация...");
         Console.ResetColor();
         await RunIndexingAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
     }
 
-    using var llm = new AnthropicLlmService(4096);
     var rewrite = new HeuristicQueryRewriteService();
-    var rag = new EnhancedRagPipeline(embeddingService, store, rewrite);
+    var rag = new EnhancedRagPipeline(embeddingService, store, rewrite, dbAlreadyExisted);
     var validator = new CitationValidator();
     var taskMemory = new TaskMemoryService(llm);
     var chat = new ChatService(llm, rag, validator, taskMemory);

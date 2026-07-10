@@ -15,7 +15,7 @@ public class CitationValidator
 
         foreach (var citation in answer.Citations)
         {
-            if (citation.SourceIndex >= contextChunks.Count)
+            if (citation.SourceIndex < 0 || citation.SourceIndex >= contextChunks.Count)
             {
                 errors.Add($"Citation references invalid source index {citation.SourceIndex} (max {contextChunks.Count - 1})");
                 continue;

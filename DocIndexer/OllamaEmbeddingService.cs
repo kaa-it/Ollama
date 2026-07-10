@@ -72,8 +72,9 @@ public class OllamaEmbeddingService(string host = "http://localhost:11434", stri
                 var response = await _client.EmbedAsync(request, ct);
                 return response.Embeddings;
             }
-            catch (HttpRequestException) when (attempt < maxRetries)
+            catch (Exception ex) when (attempt < maxRetries && (ex is HttpRequestException or TaskCanceledException))
             {
+                if (ct.IsCancellationRequested) throw;
                 await Task.Delay(delay * attempt, ct);
             }
         }

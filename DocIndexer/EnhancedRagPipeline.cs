@@ -27,7 +27,7 @@ public record RagResult(
 public class EnhancedRagPipeline
 {
     private readonly IEmbeddingService _embeddingService;
-    private readonly SqliteVectorStore _vectorStore;
+    private readonly IVectorStore _vectorStore;
     private readonly IQueryRewriteService? _rewriteService;
     private readonly SimilarityThresholdFilter _thresholdFilter;
     private readonly HeuristicReranker _reranker;
@@ -39,8 +39,9 @@ public class EnhancedRagPipeline
 
     public EnhancedRagPipeline(
         IEmbeddingService embeddingService,
-        SqliteVectorStore vectorStore,
-        IQueryRewriteService? rewriteService = null)
+        IVectorStore vectorStore,
+        IQueryRewriteService? rewriteService = null,
+        bool dbAlreadyExisted = false)
     {
         _embeddingService = embeddingService;
         _vectorStore = vectorStore;
@@ -53,7 +54,7 @@ public class EnhancedRagPipeline
         _topKPre = GetEnvInt("RAG_TOP_K_PRE", 10);
         _topKPost = GetEnvInt("RAG_TOP_K_POST", 3);
         _enableRewrite = GetEnvBool("RAG_ENABLE_REWRITE", true);
-        _enableRerank = GetEnvBool("RAG_ENABLE_RERANK", true);
+        _enableRerank = GetEnvBool("RAG_ENABLE_RERANK", true) && !dbAlreadyExisted;
     }
 
     public async Task<RagResult> ExecuteAsync(

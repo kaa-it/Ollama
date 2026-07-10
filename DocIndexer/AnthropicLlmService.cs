@@ -1,11 +1,6 @@
 using Anthropic.SDK;
 using Anthropic.SDK.Messaging;
 
-public interface ILlmService
-{
-    Task<string> AskAsync(string prompt, string? systemPrompt = null, int? maxTokens = null, CancellationToken ct = default);
-}
-
 public class AnthropicLlmService : ILlmService, IDisposable
 {
     private readonly AnthropicClient _client;

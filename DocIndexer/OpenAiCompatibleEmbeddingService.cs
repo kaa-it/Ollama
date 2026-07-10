@@ -2,10 +2,11 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 
-public class OpenAiCompatibleEmbeddingService : IEmbeddingService
+public class OpenAiCompatibleEmbeddingService : IEmbeddingService, IDisposable
 {
     private readonly HttpClient _httpClient;
     private readonly string _model;
+    private bool _disposed;
 
     public OpenAiCompatibleEmbeddingService(
         string? baseUrl = null,
@@ -71,6 +72,28 @@ public class OpenAiCompatibleEmbeddingService : IEmbeddingService
         return results;
     }
 
+    public async Task<bool> CheckAvailabilityAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            await EmbedWithRetryAsync(new List<string> { "test" }, ct);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _httpClient?.Dispose();
+            _disposed = true;
+        }
+    }
+
     private async Task<List<float[]>> EmbedWithRetryAsync(List<string> texts, CancellationToken ct)
     {
         var maxRetries = 3;
@@ -95,7 +118,7 @@ public class OpenAiCompatibleEmbeddingService : IEmbeddingService
 
                 return result.Data.OrderBy(d => d.Index).Select(d => d.Embedding).ToList();
             }
-            catch (Exception) when (attempt < maxRetries)
+            catch (Exception ex) when (attempt < maxRetries && (ex is HttpRequestException or TaskCanceledException))
             {
                 if (ct.IsCancellationRequested) throw;
                 await Task.Delay(delay * attempt, ct);
