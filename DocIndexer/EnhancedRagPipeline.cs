@@ -26,7 +26,7 @@ public record RagResult(
 
 public class EnhancedRagPipeline
 {
-    private readonly OllamaEmbeddingService _embeddingService;
+    private readonly IEmbeddingService _embeddingService;
     private readonly SqliteVectorStore _vectorStore;
     private readonly IQueryRewriteService? _rewriteService;
     private readonly SimilarityThresholdFilter _thresholdFilter;
@@ -38,7 +38,7 @@ public class EnhancedRagPipeline
     private readonly bool _enableRerank;
 
     public EnhancedRagPipeline(
-        OllamaEmbeddingService embeddingService,
+        IEmbeddingService embeddingService,
         SqliteVectorStore vectorStore,
         IQueryRewriteService? rewriteService = null)
     {

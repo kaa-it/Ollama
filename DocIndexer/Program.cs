@@ -1,8 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
-using Microsoft.Data.Sqlite;
-using OllamaSharp;
 using OllamaSharp.Models;
+using Microsoft.Data.Sqlite;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 DotEnvLoader.Load();
@@ -11,55 +10,79 @@ var mode = (args.Length > 0 ? args[0] : "help").ToLowerInvariant();
 var rootDir = args.Length > 1 ? args[1] : "patterns";
 var extensions = new[] { ".txt", ".md", ".cs", ".json", ".xml", ".yaml", ".yml", ".html", ".js", ".py" };
 var ollamaHost = Environment.GetEnvironmentVariable("OLLAMA_HOST") ?? "http://localhost:11434";
-var embeddingModel = Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "nomic-embed-text";
+var ollamaEmbeddingModel = Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "nomic-embed-text";
 var dbPath = Environment.GetEnvironmentVariable("DB_PATH") ?? "document_index.db";
 var chunkSize = int.TryParse(Environment.GetEnvironmentVariable("CHUNK_SIZE"), out var cs) ? cs : 512;
 var overlap = int.TryParse(Environment.GetEnvironmentVariable("OVERLAP"), out var ov) ? ov : 50;
 
 var store = new SqliteVectorStore(dbPath);
 await store.InitializeAsync();
-var ollama = new OllamaEmbeddingService(ollamaHost, embeddingModel);
 
-Console.ForegroundColor = ConsoleColor.Blue;
-Console.WriteLine("Проверка Ollama...");
-Console.ResetColor();
-
-try
+var provider = Environment.GetEnvironmentVariable("EMBEDDING_PROVIDER")?.ToLowerInvariant();
+IEmbeddingService embeddingService;
+if (provider == "ollama")
 {
-    var models = await ollama.CheckAvailabilityAsync();
-    if (!models.Any(m => m.Name.Contains("nomic-embed-text", StringComparison.OrdinalIgnoreCase)))
+    embeddingService = new OllamaEmbeddingService(ollamaHost, ollamaEmbeddingModel);
+}
+else
+{
+    embeddingService = new OpenAiCompatibleEmbeddingService(
+        Environment.GetEnvironmentVariable("OPENAI_EMBEDDING_URL") ?? "http://localhost:1234",
+        Environment.GetEnvironmentVariable("OPENAI_EMBEDDING_MODEL") ?? "text-embedding-nomic-embed-text-v1.5",
+        Environment.GetEnvironmentVariable("OPENAI_API_KEY"));
+}
+
+if (embeddingService is OllamaEmbeddingService ollama)
+{
+    Console.ForegroundColor = ConsoleColor.Blue;
+    Console.WriteLine("Проверка Ollama...");
+    Console.ResetColor();
+
+    try
     {
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("⚠️  Модель nomic-embed-text не найдена. Выполните: ollama pull nomic-embed-text");
+        var models = await ollama.CheckAvailabilityAsync();
+        if (!models.Any(m => m.Name.Contains("nomic-embed-text", StringComparison.OrdinalIgnoreCase)))
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("⚠️  Модель nomic-embed-text не найдена. Выполните: ollama pull nomic-embed-text");
+            Console.ResetColor();
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("✅ Ollama доступен\n");
+            Console.ResetColor();
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"❌ Ollama недоступен: {ex.Message}. Запустите: ollama serve");
         Console.ResetColor();
+        return;
     }
 }
-catch (Exception ex)
+else
 {
-    Console.ForegroundColor = ConsoleColor.Red;
-    Console.WriteLine($"❌ Ollama недоступен: {ex.Message}. Запустите: ollama serve");
+    Console.ForegroundColor = ConsoleColor.Green;
+    Console.WriteLine($"✅ Используется OpenAiCompatibleEmbeddingService\n");
     Console.ResetColor();
-    return;
 }
-
-Console.ForegroundColor = ConsoleColor.Green;
-Console.WriteLine("✅ Ollama доступен\n");
-Console.ResetColor();
 
 switch (mode)
 {
     case "index":
-        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+        await RunIndexingAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
         break;
     case "citations":
-        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
-        await RunCitationsAsync(dbPath, ollama);
+        await RunIndexingAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
+        await RunCitationsAsync(dbPath, embeddingService);
         break;
     case "chat":
-        await RunChatAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+        await RunChatAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
         break;
     case "chat-test":
-        await RunChatTestAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+        await RunChatTestAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
         break;
     case "help" or "--help" or "-h":
         Console.WriteLine("Usage: dotnet run -- [mode] [rootDir]");
@@ -74,7 +97,7 @@ switch (mode)
 // LOCAL FUNCTIONS
 // ============================================================
 
-async Task RunIndexingAsync(SqliteVectorStore store, OllamaEmbeddingService ollama, string rootDir, string[] extensions, int chunkSize, int overlap)
+async Task RunIndexingAsync(IVectorStore store, IEmbeddingService embeddingService, string rootDir, string[] extensions, int chunkSize, int overlap)
 {
     Console.ForegroundColor = ConsoleColor.Blue;
     Console.WriteLine("📐 Индексация: Structural Strategy");
@@ -86,14 +109,14 @@ async Task RunIndexingAsync(SqliteVectorStore store, OllamaEmbeddingService olla
         Console.Write($"\r  Прогресс: {p:P0}");
         Console.ResetColor();
     });
-    var pipeline = new IndexingPipeline(new StructuralChunkingStrategy(chunkSize, overlap), ollama, store);
+    var pipeline = new IndexingPipeline(new StructuralChunkingStrategy(chunkSize, overlap), embeddingService, store);
     var indexResult = await pipeline.RunAsync(rootDir, extensions, progress);
     Console.ForegroundColor = ConsoleColor.Green;
     Console.WriteLine($"\n✅ Готово: {indexResult.ChunksCreated} чанков из {indexResult.FilesProcessed} файлов за {indexResult.Duration.TotalSeconds:F1}с\n");
     Console.ResetColor();
 }
 
-async Task RunCitationsAsync(string dbPath, OllamaEmbeddingService ollama)
+async Task RunCitationsAsync(string dbPath, IEmbeddingService embeddingService)
 {
     var questionsPath = "test-questions.json";
     if (!File.Exists(questionsPath))
@@ -108,11 +131,11 @@ async Task RunCitationsAsync(string dbPath, OllamaEmbeddingService ollama)
     var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
     var questions = JsonSerializer.Deserialize<List<TestQuestion>>(questionsJson, options) ?? [];
 
-    var engine = new EvaluationEngine(dbPath, ollama);
+    var engine = new EvaluationEngine(dbPath, embeddingService);
     await engine.RunAsync(questions);
 }
 
-async Task RunChatAsync(SqliteVectorStore store, OllamaEmbeddingService ollama, string rootDir, string[] extensions, int chunkSize, int overlap)
+async Task RunChatAsync(SqliteVectorStore store, IEmbeddingService embeddingService, string rootDir, string[] extensions, int chunkSize, int overlap)
 {
     var count = await store.GetChunkCountAsync();
     if (count == 0)
@@ -120,12 +143,12 @@ async Task RunChatAsync(SqliteVectorStore store, OllamaEmbeddingService ollama, 
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("Индекс пуст, выполняется индексация...");
         Console.ResetColor();
-        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+        await RunIndexingAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
     }
 
     using var llm = new AnthropicLlmService(4096);
     var rewrite = new HeuristicQueryRewriteService();
-    var rag = new EnhancedRagPipeline(ollama, store, rewrite);
+    var rag = new EnhancedRagPipeline(embeddingService, store, rewrite);
     var validator = new CitationValidator();
     var taskMemory = new TaskMemoryService(llm);
     var chat = new ChatService(llm, rag, validator, taskMemory);
@@ -133,7 +156,7 @@ async Task RunChatAsync(SqliteVectorStore store, OllamaEmbeddingService ollama, 
     await chat.RunInteractiveAsync();
 }
 
-async Task RunChatTestAsync(SqliteVectorStore store, OllamaEmbeddingService ollama, string rootDir, string[] extensions, int chunkSize, int overlap)
+async Task RunChatTestAsync(SqliteVectorStore store, IEmbeddingService embeddingService, string rootDir, string[] extensions, int chunkSize, int overlap)
 {
     var count = await store.GetChunkCountAsync();
     if (count == 0)
@@ -141,12 +164,12 @@ async Task RunChatTestAsync(SqliteVectorStore store, OllamaEmbeddingService olla
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("Индекс пуст, выполняется индексация...");
         Console.ResetColor();
-        await RunIndexingAsync(store, ollama, rootDir, extensions, chunkSize, overlap);
+        await RunIndexingAsync(store, embeddingService, rootDir, extensions, chunkSize, overlap);
     }
 
     using var llm = new AnthropicLlmService(4096);
     var rewrite = new HeuristicQueryRewriteService();
-    var rag = new EnhancedRagPipeline(ollama, store, rewrite);
+    var rag = new EnhancedRagPipeline(embeddingService, store, rewrite);
     var validator = new CitationValidator();
     var taskMemory = new TaskMemoryService(llm);
     var chat = new ChatService(llm, rag, validator, taskMemory);
@@ -516,96 +539,6 @@ public class StructuralChunkingStrategy(int maxChunkSize = 512, int overlap = 50
         {
             yield return fileChunks[i] with { ChunkIndex = i, TotalChunks = total };
         }
-    }
-}
-
-// ============================================================
-// EMBEDDING SERVICE
-// ============================================================
-
-public interface IEmbeddingService
-{
-    Task<float[][]> GenerateEmbeddingsAsync(IEnumerable<string> texts, CancellationToken ct = default);
-}
-
-public class OllamaEmbeddingService(string host = "http://localhost:11434", string model = "nomic-embed-text") : IEmbeddingService
-{
-    private readonly OllamaApiClient _client = new(new Uri(host)) { SelectedModel = model };
-
-    public async Task<IEnumerable<Model>> CheckAvailabilityAsync()
-    {
-        return await _client.ListLocalModelsAsync();
-    }
-
-    public async Task<float[]> GenerateQueryEmbeddingAsync(string query, CancellationToken ct = default)
-    {
-        var prefixedTexts = new[] { $"search_query: {query}" };
-        var embeddings = await EmbedWithRetryAsync(prefixedTexts.ToList(), ct);
-        if (embeddings[0].Length != 768)
-            throw new InvalidOperationException($"Expected 768-dimensional embedding, got {embeddings[0].Length}");
-        return embeddings[0];
-    }
-
-    public async Task<float[][]> GenerateEmbeddingsAsync(IEnumerable<string> texts, CancellationToken ct = default)
-    {
-        var textList = texts.ToList();
-        if (textList.Count == 0) return [];
-
-        var batches = new List<List<string>>();
-        var batch = new List<string>();
-        foreach (var t in textList)
-        {
-            batch.Add(t);
-            if (batch.Count >= 10)
-            {
-                batches.Add(batch);
-                batch = [];
-            }
-        }
-        if (batch.Count > 0) batches.Add(batch);
-
-        var results = new float[textList.Count][];
-        var index = 0;
-
-        foreach (var b in batches)
-        {
-            var prefixedTexts = b.Select(t => $"search_document: {t}").ToList();
-            var embeddings = await EmbedWithRetryAsync(prefixedTexts, ct);
-            foreach (var emb in embeddings)
-            {
-                if (emb.Length != 768)
-                    throw new InvalidOperationException($"Expected 768-dimensional embedding, got {emb.Length}");
-                results[index++] = emb;
-            }
-        }
-
-        return results;
-    }
-
-    private async Task<List<float[]>> EmbedWithRetryAsync(List<string> texts, CancellationToken ct)
-    {
-        var maxRetries = 3;
-        var delay = 1000;
-
-        for (int attempt = 1; attempt <= maxRetries; attempt++)
-        {
-            try
-            {
-                var request = new EmbedRequest
-                {
-                    Input = texts,
-                    Model = _client.SelectedModel
-                };
-                var response = await _client.EmbedAsync(request, ct);
-                return response.Embeddings;
-            }
-            catch (HttpRequestException) when (attempt < maxRetries)
-            {
-                await Task.Delay(delay * attempt, ct);
-            }
-        }
-
-        throw new HttpRequestException("Failed to generate embeddings after 3 retries");
     }
 }
 

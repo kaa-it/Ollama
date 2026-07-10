@@ -5,10 +5,10 @@ using Microsoft.Data.Sqlite;
 public class EvaluationEngine
 {
     private readonly string _dbPath;
-    private readonly OllamaEmbeddingService _embeddingService;
+    private readonly IEmbeddingService _embeddingService;
     private string ConnectionString => $"Data Source={_dbPath}";
 
-    public EvaluationEngine(string dbPath, OllamaEmbeddingService embeddingService)
+    public EvaluationEngine(string dbPath, IEmbeddingService embeddingService)
     {
         _dbPath = dbPath;
         _embeddingService = embeddingService;
