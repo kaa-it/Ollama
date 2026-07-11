@@ -11,14 +11,14 @@ public class ChatScenarioTest
         _taskMemory = taskMemory;
     }
 
-    public async Task RunScenariosAsync(string scenariosPath, CancellationToken ct = default)
+    private async Task<List<ChatScenario>> LoadScenariosAsync(string scenariosPath, CancellationToken ct)
     {
         if (!File.Exists(scenariosPath))
         {
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"❌ File {scenariosPath} not found.");
             Console.ResetColor();
-            return;
+            return [];
         }
 
         var json = await File.ReadAllTextAsync(scenariosPath, ct);
@@ -29,14 +29,138 @@ public class ChatScenarioTest
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine("❌ No scenarios found.");
             Console.ResetColor();
-            return;
+            return [];
         }
+
+        return scenarios;
+    }
+
+    private static string BoxLine(string content) => $"║{content.Truncate(75).PadRight(78)}║";
+
+    public async Task RunScenariosAsync(string scenariosPath, CancellationToken ct = default)
+    {
+        var scenarios = await LoadScenariosAsync(scenariosPath, ct);
+        if (scenarios.Count == 0) return;
 
         foreach (var scenario in scenarios)
         {
             _taskMemory.Reset();
             await RunScenarioAsync(scenario, ct);
         }
+    }
+
+    public async Task RunFirstScenarioVerboseAsync(string scenariosPath, int messageCount = 2, CancellationToken ct = default)
+    {
+        var scenarios = await LoadScenariosAsync(scenariosPath, ct);
+        if (scenarios.Count == 0) return;
+
+        var scenario = scenarios[0];
+        _taskMemory.Reset();
+
+        var session = new ChatSession();
+
+        if (!string.IsNullOrEmpty(scenario.InitialGoal))
+        {
+            _taskMemory.State.Goal = scenario.InitialGoal;
+            _taskMemory.State.ConfidenceInGoal = ConfidenceLevel.High;
+        }
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("\n" + "╔" + new string('═', 78) + "╗");
+        Console.WriteLine(BoxLine($"  CHAT TEST 2 — Verbose: {scenario.Name}"));
+        Console.WriteLine(BoxLine($"  First {messageCount} messages only"));
+        Console.WriteLine("╚" + new string('═', 78) + "╝");
+        Console.ResetColor();
+
+        var limitedMessages = scenario.Messages.Take(messageCount).ToList();
+
+        if (limitedMessages.Count == 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("⚠️  No messages to process.");
+            Console.ResetColor();
+            return;
+        }
+
+        for (int i = 0; i < limitedMessages.Count; i++)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            var msg = limitedMessages[i];
+
+            session.AddUserMessage(msg);
+
+            try
+            {
+                var answer = await _chatService.ProcessMessageAsync(msg, session, ct);
+                session.AddAssistantMessage(answer);
+
+                Console.WriteLine();
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"─── Question [{i + 1}/{limitedMessages.Count}] ───");
+                Console.ResetColor();
+                Console.WriteLine(msg);
+                Console.WriteLine();
+
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"─── Answer (Confidence: {answer.Confidence}) ───");
+                Console.ResetColor();
+                Console.WriteLine(answer.Answer);
+                Console.WriteLine();
+
+                if (answer.ClarificationRequest != null)
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkYellow;
+                    Console.WriteLine($"─── Clarification Request ───");
+                    Console.ResetColor();
+                    Console.WriteLine(answer.ClarificationRequest);
+                    Console.WriteLine();
+                }
+
+                if (answer.Sources.Count > 0)
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.WriteLine($"─── Sources ({answer.Sources.Count}) ───");
+                    foreach (var src in answer.Sources)
+                    {
+                        Console.WriteLine($"  [{src.ChunkIndex}] {src.Source}{(src.Section != null ? $" ({src.Section})" : "")} (score: {src.RelevanceScore:F3})");
+                    }
+                    Console.ResetColor();
+                    Console.WriteLine();
+                }
+
+                if (answer.Citations.Count > 0)
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.WriteLine($"─── Citations ({answer.Citations.Count}) ───");
+                    foreach (var cit in answer.Citations)
+                    {
+                        var quotePreview = cit.Quote.Length > 200 ? cit.Quote[..200] + "..." : cit.Quote;
+                        Console.WriteLine($"  [{cit.SourceIndex}] \"{quotePreview}\"");
+                    }
+                    Console.ResetColor();
+                    Console.WriteLine();
+                }
+
+                Console.WriteLine(new string('═', 80));
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"  [{i + 1}/{limitedMessages.Count}] Error: {ex.Message}");
+                Console.ResetColor();
+            }
+        }
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("╔" + new string('═', 78) + "╗");
+        Console.WriteLine(BoxLine("  CHAT TEST 2 REPORT"));
+        Console.WriteLine("╠" + new string('═', 78) + "╣");
+        Console.WriteLine(BoxLine($" Scenario: {scenario.Name}"));
+        Console.WriteLine(BoxLine($" Messages processed: {limitedMessages.Count}"));
+        Console.WriteLine(BoxLine($" Goal: {_taskMemory.State.Goal ?? "(not set)"}"));
+        Console.WriteLine("╚" + new string('═', 78) + "╝");
+        Console.ResetColor();
     }
 
     private async Task RunScenarioAsync(ChatScenario scenario, CancellationToken ct)
@@ -111,17 +235,17 @@ public class ChatScenarioTest
         var avgLength = scenario.Messages.Count > 0 ? totalLength / scenario.Messages.Count : 0;
 
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("\n╔══════════════════════════════════════════════════════════════════════════════╗");
-        Console.WriteLine("║                    CHAT SCENARIO TEST REPORT                                 ║");
-        Console.WriteLine("╠══════════════════════════════════════════════════════════════════════════════╣");
-        Console.WriteLine($"║ Scenario: {scenario.Name,-59}║");
-        Console.WriteLine($"║ Messages: {scenario.Messages.Count,-71}║");
-        Console.WriteLine($"║ Goal Preserved:        {(goalPreserved ? "YES" : "NO"),-52}║");
-        Console.WriteLine($"║ Sources Always Shown:  {(sourcesAlwaysShown ? "YES" : "NO"),-52}║");
-        Console.WriteLine($"║ Citations Always Shown: {(citationsAlwaysShown ? "YES" : "NO"),-52}║");
-        Console.WriteLine($"║ Unknown Answers:       {unknownCount,-52}║");
-        Console.WriteLine($"║ Avg Response Length:   {avgLength,-5} chars                                       ║");
-        Console.WriteLine("╚══════════════════════════════════════════════════════════════════════════════╝");
+        Console.WriteLine("\n╔" + new string('═', 78) + "╗");
+        Console.WriteLine(BoxLine("  CHAT SCENARIO TEST REPORT"));
+        Console.WriteLine("╠" + new string('═', 78) + "╣");
+        Console.WriteLine(BoxLine($" Scenario: {scenario.Name}"));
+        Console.WriteLine(BoxLine($" Messages: {scenario.Messages.Count}"));
+        Console.WriteLine(BoxLine($" Goal Preserved: {(goalPreserved ? "YES" : "NO")}"));
+        Console.WriteLine(BoxLine($" Sources Always Shown: {(sourcesAlwaysShown ? "YES" : "NO")}"));
+        Console.WriteLine(BoxLine($" Citations Always Shown: {(citationsAlwaysShown ? "YES" : "NO")}"));
+        Console.WriteLine(BoxLine($" Unknown Answers: {unknownCount}"));
+        Console.WriteLine(BoxLine($" Avg Response Length: {avgLength} chars"));
+        Console.WriteLine("╚" + new string('═', 78) + "╝");
         Console.ResetColor();
     }
 

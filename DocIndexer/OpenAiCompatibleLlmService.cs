@@ -44,7 +44,11 @@ public class OpenAiCompatibleLlmService : ILlmService
             Model = _model,
             Messages = messages,
             MaxTokens = maxTokens ?? _defaultMaxTokens,
-            Stream = false
+            Stream = false,
+            // Уже подобранные значения параметров
+            Temperature = 0.2,
+            TopP = 0.9,
+            TopK = 40,
         };
 
         var result = await SendWithRetryAsync(request, ct);
@@ -103,6 +107,15 @@ public class OpenAiCompatibleLlmService : ILlmService
 
         [JsonPropertyName("stream")]
         public bool Stream { get; set; }
+        
+        [JsonPropertyName("temperature")]
+        public double Temperature { get; set; }
+        
+        [JsonPropertyName("top_p")]
+        public double TopP { get; set; }
+        
+        [JsonPropertyName("top_k")]
+        public int TopK { get; set; }
     }
 
     private class ChatMessage

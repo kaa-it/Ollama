@@ -137,12 +137,15 @@ switch (mode)
     case "chat-test":
         await RunChatTestAsync(store, embeddingService, llm, rootDir, extensions, chunkSize, overlap);
         break;
+    case "chat-test-2":
+        await RunChatTest2Async(store, embeddingService, llm, rootDir, extensions, chunkSize, overlap);
+        break;
     case "help" or "--help" or "-h":
         Console.WriteLine("Usage: dotnet run -- [mode] [rootDir]");
-        Console.WriteLine("Modes: index, citations, chat, chat-test");
+        Console.WriteLine("Modes: index, citations, chat, chat-test, chat-test-2");
         break;
     default:
-        Console.WriteLine($"Unknown mode '{mode}'. Use: index, citations, chat, chat-test");
+        Console.WriteLine($"Unknown mode '{mode}'. Use: index, citations, chat, chat-test, chat-test-2");
         break;
 }
 
@@ -209,7 +212,7 @@ async Task RunChatAsync(IVectorStore store, IEmbeddingService embeddingService, 
     await chat.RunInteractiveAsync();
 }
 
-async Task RunChatTestAsync(IVectorStore store, IEmbeddingService embeddingService, ILlmService llm, string rootDir, string[] extensions, int chunkSize, int overlap)
+async Task<ChatScenarioTest> CreateChatScenarioTestAsync(IVectorStore store, IEmbeddingService embeddingService, ILlmService llm, string rootDir, string[] extensions, int chunkSize, int overlap)
 {
     if (!dbAlreadyExisted)
     {
@@ -224,9 +227,19 @@ async Task RunChatTestAsync(IVectorStore store, IEmbeddingService embeddingServi
     var validator = new CitationValidator();
     var taskMemory = new TaskMemoryService(llm);
     var chat = new ChatService(llm, rag, validator, taskMemory);
-    var test = new ChatScenarioTest(chat, taskMemory);
+    return new ChatScenarioTest(chat, taskMemory);
+}
 
+async Task RunChatTestAsync(IVectorStore store, IEmbeddingService embeddingService, ILlmService llm, string rootDir, string[] extensions, int chunkSize, int overlap)
+{
+    var test = await CreateChatScenarioTestAsync(store, embeddingService, llm, rootDir, extensions, chunkSize, overlap);
     await test.RunScenariosAsync("test-chat-scenarios.json");
+}
+
+async Task RunChatTest2Async(IVectorStore store, IEmbeddingService embeddingService, ILlmService llm, string rootDir, string[] extensions, int chunkSize, int overlap)
+{
+    var test = await CreateChatScenarioTestAsync(store, embeddingService, llm, rootDir, extensions, chunkSize, overlap);
+    await test.RunFirstScenarioVerboseAsync("test-chat-scenarios.json", messageCount: 2);
 }
 
 // ============================================================
