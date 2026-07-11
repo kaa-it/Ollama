@@ -15,7 +15,7 @@ public class OpenAiCompatibleLlmService : ILlmService
         string? apiKey = null,
         int defaultMaxTokens = 1024)
     {
-        var url = (baseUrl ?? Environment.GetEnvironmentVariable("OPENAI_LLM_URL") ?? "http://localhost:1234").TrimEnd('/');
+        var url = (baseUrl ?? Environment.GetEnvironmentVariable("OPENAI_LLM_URL") ?? "http://188.94.191.40:1234").TrimEnd('/');
         _httpClient = new HttpClient
         {
             BaseAddress = new Uri(url),
@@ -26,7 +26,7 @@ public class OpenAiCompatibleLlmService : ILlmService
         if (!string.IsNullOrEmpty(key))
             _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
 
-        _model = model ?? Environment.GetEnvironmentVariable("OPENAI_LLM_MODEL") ?? "qwen/qwen3.6-35b-a3b";
+        _model = model ?? Environment.GetEnvironmentVariable("OPENAI_LLM_MODEL") ?? "qwen2.5:7b";
         _defaultMaxTokens = defaultMaxTokens;
     }
 
